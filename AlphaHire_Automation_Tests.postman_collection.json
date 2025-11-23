@@ -1,0 +1,254 @@
+{
+	"info": {
+		"name": "AlphaHire Automation Tests",
+		"description": "Test collection for automation fixes - Duplicate detection, Out of business, Contact info provided",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "1. Duplicate Template Detection",
+			"item": [
+				{
+					"name": "First Request (Should Send)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Reply was sent\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.reply_sent).to.eql(true);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"event\": \"REPLY_RECEIVED\",\n  \"message_id\": \"test-dup-msg-1\",\n  \"original_message_id\": \"test-dup-thread-1\",\n  \"email_account\": \"sophia@alphahire.me\",\n  \"lead_email\": \"dzellers@rays.com\",\n  \"lead_first_name\": \"David\",\n  \"lead_last_name\": \"Zellers\",\n  \"email_replied_body\": \"Yes, please send the agreement.\",\n  \"email_subject\": \"Re: Recruitment Services\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/webhooks/reachinbox",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"webhooks",
+								"reachinbox"
+							]
+						},
+						"description": "First request should send successfully"
+					}
+				},
+				{
+					"name": "Second Request (Should Flag Duplicate)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Duplicate detected - manual review required\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.include(\"Manual review\");",
+									"    pm.expect(jsonData.reason).to.include(\"Repeated template_id\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"event\": \"REPLY_RECEIVED\",\n  \"message_id\": \"test-dup-msg-2\",\n  \"original_message_id\": \"test-dup-thread-1\",\n  \"email_account\": \"sophia@alphahire.me\",\n  \"lead_email\": \"dzellers@rays.com\",\n  \"lead_first_name\": \"David\",\n  \"lead_last_name\": \"Zellers\",\n  \"email_replied_body\": \"Yes, please send the agreement.\",\n  \"email_subject\": \"Re: Recruitment Services\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/webhooks/reachinbox",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"webhooks",
+								"reachinbox"
+							]
+						},
+						"description": "Second request with same thread_id should detect duplicate template_id and flag for manual review"
+					}
+				}
+			],
+			"description": "Test Issue 1 Fix: Duplicate template_id detection"
+		},
+		{
+			"name": "2. Out of Business Detection",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"event\": \"REPLY_RECEIVED\",\n  \"message_id\": \"test-out-of-business-1\",\n  \"original_message_id\": \"test-out-of-business-thread-1\",\n  \"email_account\": \"sophia@alphahire.me\",\n  \"lead_email\": \"ndaniels@tryalphahire.info\",\n  \"lead_first_name\": \"Noah\",\n  \"lead_last_name\": \"Daniels\",\n  \"email_replied_body\": \"We are no longer in business, so we won't be needing your services.\",\n  \"email_subject\": \"Re: Recruitment Services\"\n}"
+				},
+				"url": {
+					"raw": "{{base_url}}/webhooks/reachinbox",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"webhooks",
+						"reachinbox"
+					]
+				},
+				"description": "Test Issue 2 Fix: Out of business should NOT ask for agreement"
+			},
+			"response": []
+		},
+		{
+			"name": "3. Contact Info Already Provided",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"event\": \"REPLY_RECEIVED\",\n  \"message_id\": \"test-contact-provided-1\",\n  \"original_message_id\": \"test-contact-thread-1\",\n  \"email_account\": \"sophia@alphahire.me\",\n  \"lead_email\": \"jstomieroski@jimnnicks.com\",\n  \"lead_first_name\": \"John\",\n  \"lead_last_name\": \"Stomieroski\",\n  \"email_replied_body\": \"I'm not the right person to contact. Please reach out to Sarah Johnson at sarah.johnson@jimnnicks.com instead.\",\n  \"email_subject\": \"Re: Recruitment Services\"\n}"
+				},
+				"url": {
+					"raw": "{{base_url}}/webhooks/reachinbox",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"webhooks",
+						"reachinbox"
+					]
+				},
+				"description": "Test Issue 3 & 4 Fix: When contact info is provided, should acknowledge and NOT ask again"
+			},
+			"response": []
+		},
+		{
+			"name": "4. Contact Info NOT Provided",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"event\": \"REPLY_RECEIVED\",\n  \"message_id\": \"test-no-contact-1\",\n  \"original_message_id\": \"test-no-contact-thread-1\",\n  \"email_account\": \"sophia@alphahire.me\",\n  \"lead_email\": \"test@example.com\",\n  \"lead_first_name\": \"Test\",\n  \"lead_last_name\": \"User\",\n  \"email_replied_body\": \"I'm not the hiring manager, you should contact someone else.\",\n  \"email_subject\": \"Re: Recruitment Services\"\n}"
+				},
+				"url": {
+					"raw": "{{base_url}}/webhooks/reachinbox",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"webhooks",
+						"reachinbox"
+					]
+				},
+				"description": "Normal flow: When contact info is NOT provided, should ask for it"
+			},
+			"response": []
+		},
+		{
+			"name": "5. Normal YES_SEND Flow",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"event\": \"REPLY_RECEIVED\",\n  \"message_id\": \"test-yes-send-1\",\n  \"original_message_id\": \"test-yes-thread-1\",\n  \"email_account\": \"sophia@alphahire.me\",\n  \"lead_email\": \"test@example.com\",\n  \"lead_first_name\": \"Test\",\n  \"lead_last_name\": \"User\",\n  \"email_replied_body\": \"Yes, please send the agreement.\",\n  \"email_subject\": \"Re: Recruitment Services\"\n}"
+				},
+				"url": {
+					"raw": "{{base_url}}/webhooks/reachinbox",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"webhooks",
+						"reachinbox"
+					]
+				},
+				"description": "Test normal positive response flow"
+			},
+			"response": []
+		},
+		{
+			"name": "6. INTERESTED Template Bug Fix",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"event\": \"REPLY_RECEIVED\",\n  \"message_id\": \"test-interested-1\",\n  \"original_message_id\": \"test-interested-thread-1\",\n  \"email_account\": \"sophia@alphahire.me\",\n  \"lead_email\": \"test@example.com\",\n  \"lead_first_name\": \"Test\",\n  \"lead_last_name\": \"User\",\n  \"email_replied_body\": \"I'm interested in learning more about your services.\",\n  \"email_subject\": \"Re: Recruitment Services\"\n}"
+				},
+				"url": {
+					"raw": "{{base_url}}/webhooks/reachinbox",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"webhooks",
+						"reachinbox"
+					]
+				},
+				"description": "Test that INTERESTED template asks correctly about role vs role+location (not repeating role twice)"
+			},
+			"response": []
+		}
+	],
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://localhost:3000",
+			"type": "string"
+		}
+	]
+}
+
