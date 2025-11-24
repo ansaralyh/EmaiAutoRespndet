@@ -36,8 +36,8 @@ export const TPL: Record<string, TemplateFunction> = {
    */
   INTERESTED: (vars: TemplateVars) => {
     // Handle role: use role if available, otherwise use role1/role2, or default
-    let role1 = vars.role || vars.role1 || 'this role';
-    let role2 = vars.role2 || (vars.location ? `${vars.role || vars.role1 || 'this role'} ${vars.location}` : null);
+    let role1 = vars.role || vars.role1 || 'this';
+    let role2 = vars.role2 || (vars.location ? `${vars.role || vars.role1 || 'this'} ${vars.location}` : null);
     
     // If we have location but no role2, create role2 with location
     if (!role2 && vars.location && vars.role) {
@@ -59,11 +59,19 @@ export const TPL: Record<string, TemplateFunction> = {
       role2 = 'similar positions';
     }
     
+    // Fix "position position" bug: Don't add " position" if role2 already contains "position" or "positions"
+    const role1Text = role1.includes('position') ? role1 : `${role1} position`;
+    const role2Text = role2.includes('position') || role2.includes('positions') ? role2 : `${role2} position`;
+    
+    // Fix "the this" grammar: Use "this" without "the" when role1 is "this"
+    const role1Prefix = role1 === 'this' ? '' : 'the ';
+    const role2Prefix = role2 === 'similar positions' ? '' : 'the ';
+    
     return `Great — happy to get those over to you.
 
 Just so you have everything upfront: we work at a flat 10% of first-year base salary with a 6-month replacement guarantee.
 
-Before I send the agreement, is this for the ${role1} position or the ${role2} position?`;
+Before I send the agreement, is this for ${role1Prefix}${role1Text} or ${role2Prefix}${role2Text}?`;
   },
 
   /**
@@ -214,11 +222,14 @@ If it makes sense, I can send the agreement over.`;
    * 12. FEES_QUESTION - When They Ask if There Are Fees
    */
   FEES_QUESTION: (vars: TemplateVars) => {
+    const role = vars.role || vars.role1;
+    const positionInfo = role ? `\n\nJust to confirm, is this for the ${role} position?` : '';
+    
     return `Great question — we only charge if you hire someone we present.
 
 It's a simple 10% contingency model with a 6-month replacement guarantee.
 
-No upfront fees.
+No upfront fees.${positionInfo}
 
 Would you like me to send the agreement?`;
   },

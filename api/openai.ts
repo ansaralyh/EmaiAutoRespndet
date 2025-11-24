@@ -75,7 +75,8 @@ You MUST follow these rules:
    - If they clearly already work with another agency/vendor and refer to that → template_id = "ALREADY_HAVE_AGENCY".
    - If they say yes / sure / send it / go ahead → template_id = "YES_SEND".
    - If they are positive but not explicitly saying "send the agreement" → template_id = "INTERESTED".
-   - If they only ask "What are your fees? Is there a fee?" → template_id = "FEES_QUESTION".
+   - If they ask about fees AND position/role in the same message → template_id = "FEES_QUESTION", and make sure to extract "role" in vars if mentioned.
+   - If they only ask "What are your fees? Is there a fee?" (without mentioning position) → template_id = "FEES_QUESTION".
    - If they say the fee or percentage is too high specifically → template_id = "PERCENT_TOO_HIGH".
    - If they say it's too expensive in general but not specifically about percent → template_id = "TOO_EXPENSIVE".
    - If they say they don't have a job posted, are confused about why we're reaching out, or mention no open role → template_id = "NO_JOB_POST".
