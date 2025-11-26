@@ -35,54 +35,50 @@ export const TPL: Record<string, TemplateFunction> = {
    * 1. INTERESTED - When They're Interested
    */
   INTERESTED: (vars: TemplateVars) => {
-    // Handle role: use role if available, otherwise use role1/role2, or default
-    let role1 = vars.role || vars.role1 || 'this';
-    let role2 = vars.role2 || (vars.location ? `${vars.role || vars.role1 || 'this'} ${vars.location}` : null);
+    // Handle role and location for the question
+    // Priority: role (explicit) > role1 (inferred) > role2 (inferred) > default
+    const role = vars.role || vars.role1;
+    const role2 = vars.role2;
+    const location = vars.location ? ` in ${vars.location}` : '';
     
-    // If we have location but no role2, create role2 with location
-    if (!role2 && vars.location && vars.role) {
-      role2 = `${vars.role} ${vars.location}`;
+    // Build the role question part
+    let roleQuestion = '';
+    
+    // If we have both role1 and role2 (inferred roles), ask about both
+    if (role && role2 && role !== role2) {
+      roleQuestion = `Also, is this for the ${role}${location}, or the ${role2}${location}?`;
     }
-    
-    // If we still don't have role2, use role1 with location or just a different phrasing
-    if (!role2) {
-      if (vars.location) {
-        role2 = `${role1} ${vars.location}`;
+    // If we have a single role (explicit or inferred)
+    else if (role) {
+      if (location) {
+        roleQuestion = `Also, is this for the ${role}${location}, or are there any other positions you're hiring for right now?`;
       } else {
-        // If no location, ask about the role vs similar positions
-        role2 = 'similar positions';
+        roleQuestion = `Also, is this for the ${role}, or are there any other positions you're hiring for right now?`;
       }
     }
-    
-    // Ensure role1 and role2 are different
-    if (role1 === role2) {
-      role2 = 'similar positions';
+    // If no role information at all
+    else {
+      roleQuestion = `Also, are there any other positions you're hiring for right now?`;
     }
-    
-    // Fix "position position" bug: Don't add " position" if role2 already contains "position" or "positions"
-    const role1Text = role1.includes('position') ? role1 : `${role1} position`;
-    const role2Text = role2.includes('position') || role2.includes('positions') ? role2 : `${role2} position`;
-    
-    // Fix "the this" grammar: Use "this" without "the" when role1 is "this"
-    const role1Prefix = role1 === 'this' ? '' : 'the ';
-    const role2Prefix = role2 === 'similar positions' ? '' : 'the ';
     
     return `Great — happy to get those over to you.
 
-Just so you have everything upfront: we work at a flat 10% of first-year base salary with a 6-month replacement guarantee.
+Just so you have everything upfront: our terms are a flat 10% of the first year's salary with a full 6-month replacement guarantee.
 
-Before I send the agreement, is this for ${role1Prefix}${role1Text} or ${role2Prefix}${role2Text}?`;
+I'll send over the agreement for e-signature first so we can include full candidate details without redactions. Any questions before I send?
+
+${roleQuestion}`;
   },
 
   /**
    * 2. YES_SEND - When They Say "Yes," "Sure," "Send," etc.
    */
   YES_SEND: (vars: TemplateVars) => {
-    return `Perfect — here's everything upfront so expectations are clear:
+    return `Perfect — I've sent the agreement over now for e-signature.
 
-We work at a flat 10% fee with a 6-month replacement guarantee.
+Once that's in place, we'll be able to share full candidate details without redactions and keep things moving quickly.
 
-Would you like me to send the agreement to this email, or is there a better contact?`;
+If anyone else (HR, hiring manager, or a co-founder) needs to be looped in for future updates, feel free to reply here and I'll include them.`;
   },
 
   /**
@@ -125,8 +121,11 @@ Would you like me to send the agreement so you have it on file for future roles?
 
   /**
    * 5. UNSUBSCRIBE - When They Want to Unsubscribe
+   * NOTE: This template is NOT used - handler skips reply and marks lead as DNC
+   * Kept here for reference only
    */
   UNSUBSCRIBE: (vars: TemplateVars) => {
+    // This template is never called - handler returns early for UNSUBSCRIBE
     return `Thanks for letting me know — I won't reach out again.
 
 Before I close this out, would you like me to send our agreement for future reference in case a hard-to-fill role comes up?`;
@@ -136,9 +135,9 @@ Before I close this out, would you like me to send our agreement for future refe
    * 6. ASK_AGREEMENT - When They Ask for the Agreement
    */
   ASK_AGREEMENT: (vars: TemplateVars) => {
-    return `Absolutely — I can send that over.
+    return `Absolutely — I've just sent the agreement to this email for e-signature.
 
-I'll send the agreement to this email for e-signature. If there's anyone else (HR, hiring manager, co-founder) who should be included, feel free to reply and I'll loop them in on future communication.`;
+If anyone else needs to be included (HR, hiring manager, co-founder), feel free to reply here and I'll add them to future communication.`;
   },
 
   /**
@@ -179,7 +178,7 @@ Open to giving us a shot? If so, I can send the agreement.`;
   },
 
   /**
-   * 10. NOT_HIRING_CONTACT - When They're Not the Hiring Contact
+   * 10. NOT_HIRING_CONTACT - When They're Not the Hiring Contact (legacy - kept for backward compatibility)
    */
   NOT_HIRING_CONTACT: (vars: TemplateVars, flags?: TemplateFlags) => {
     // If contact info is already provided, just acknowledge it
@@ -203,6 +202,32 @@ We keep things simple at 10% with a 6-month guarantee.
 Would you mind connecting me with the correct hiring contact?
 
 I can send them the agreement to review.`;
+  },
+
+  /**
+   * 10a. WRONG_PERSON_WITH_CONTACT - When They're Not the Right Person and Provide Valid Contact Info
+   */
+  WRONG_PERSON_WITH_CONTACT: (vars: TemplateVars) => {
+    const contactName = vars.contact_name ? ` ${vars.contact_name}` : '';
+    const contactEmail = vars.contact_email ? ` (${vars.contact_email})` : '';
+    
+    return `Thanks for the heads-up — really appreciate it.
+
+I'll reach out to${contactName}${contactEmail} and keep you copied so you're in the loop.
+
+If there's anyone else who should be included on hiring conversations, feel free to let me know.`;
+  },
+
+  /**
+   * 10b. WRONG_PERSON_NO_CONTACT - When They're Not the Right Person and No Contact Info Provided
+   * Note: This template should NOT be used (handler skips reply), but kept for completeness
+   */
+  WRONG_PERSON_NO_CONTACT: (vars: TemplateVars) => {
+    // This template should not be used - handler skips reply for this case
+    // But kept here for reference
+    return `Thanks for the heads-up — would you mind CC'ing me or sharing the best contact for hiring instead?
+
+Happy to reach out to them directly if easier and keep you copied so you're in the loop.`;
   },
 
   /**
@@ -247,6 +272,60 @@ Includes a 6-month replacement guarantee
 
 If you're open to it, I can send the agreement so you can review everything.`;
   },
+
+  /**
+   * 14. SKEPTICAL - When They Express Skepticism About the Email
+   */
+  SKEPTICAL: (vars: TemplateVars) => {
+    const role1 = vars.role1 || vars.role || 'the role';
+    const role2 = vars.role2;
+    const rolesMentioned = role2 ? ` (or both positions you mentioned)` : '';
+    
+    return `Thanks for the reply — totally understandable question.
+
+Yes, we reached out proactively because we regularly place roles in the Pacific Northwest as well, and we only reach out when we actually have screened candidates ready to share.
+
+We don't spam lists — we only message companies where we believe we can add value.
+
+If you want, I can send over the candidate details${rolesMentioned}.
+
+Would you like me to send the agreement so we can share the full resumes without redactions?`;
+  },
+
+  /**
+   * 15. ROLE_CLARIFICATION_MULTI - When They Explicitly List Multiple Roles
+   */
+  ROLE_CLARIFICATION_MULTI: (vars: TemplateVars) => {
+    const role1 = vars.role1 || vars.role || 'the first role';
+    const role2 = vars.role2 || 'the second role';
+    
+    return `Appreciate the clarity — thank you.
+
+We can support both roles.
+
+For ${role1}, we have strong candidates ready to share.
+
+For ${role2}, we have strong candidates ready to share.
+
+We keep things simple: flat 10% fee and a 6-month guarantee.
+
+If you'd like me to send the agreement, I can share the full resumes without redactions.`;
+  },
+
+  /**
+   * 16. GEO_CONCERN - When They Express Geographic Concerns
+   */
+  GEO_CONCERN: (vars: TemplateVars) => {
+    const location = vars.location || 'your area';
+    
+    return `Totally fair question.
+
+Yes — the candidates we're reaching out about are local to ${location}.
+
+We only open conversations when we already have people screened and available.
+
+If you'd like, I can send the agreement so we can share full details without redactions.`;
+  },
 };
 
 /**
@@ -264,6 +343,14 @@ export function getScript(templateId: string, vars: TemplateVars = {}, flags?: T
   }
   
   return template(vars, flags);
+}
+
+/**
+ * Get follow-up email text after agreement is sent
+ * @returns Follow-up email text
+ */
+export function getFollowUpEmailText(): string {
+  return `Ok great, we just sent you the agreement via Signwell, feel free to reach out with any questions.`;
 }
 
 /**

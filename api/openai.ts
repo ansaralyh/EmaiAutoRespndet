@@ -41,8 +41,14 @@ You MUST follow these rules:
    - "ASK_AGREEMENT"
    - "TOO_EXPENSIVE"
    - "ROLE_UNCLEAR"
+   - "ROLE_CLARIFICATION_MULTI"
+   - "SKEPTICAL"
+   - "GEO_CONCERN"
    - "ALREADY_HAVE_AGENCY"
    - "NOT_HIRING_CONTACT"
+   - "WRONG_PERSON_WITH_CONTACT"
+   - "WRONG_PERSON_NO_CONTACT"
+   - "OUT_OF_OFFICE"
    - "LINK_TO_APPLY"
    - "FEES_QUESTION"
    - "PERCENT_TOO_HIGH"
@@ -50,11 +56,17 @@ You MUST follow these rules:
 3. "vars" MUST be a JSON object. Include keys ONLY if you are reasonably confident:
    - "role": the main job title they are talking about (e.g. "Account Executive")
    - "location": location if mentioned (e.g. "NYC", "Dallas, TX")
-   - "role1", "role2": likely roles they might be hiring for if the reply is vague
+   - "role1", "role2": likely roles they might be hiring for if the reply is vague OR if no role is mentioned, infer from company context (e.g., company domain, company name, industry). For example, if company is "tech startup" → suggest "Software Engineer" and "Product Manager". If company is "sales company" → suggest "Account Executive" and "Sales Manager". If company is "restaurant" → suggest "General Manager" and "Operations Manager". Always provide 2 distinct roles when inferring.
    - "company_name": their company name, if clearly stated
    - "contact_email": email address if they provide a contact person's email
    - "contact_name": name if they provide a contact person's name
    - You can add other simple string fields if obviously useful.
+   
+   IMPORTANT: When the lead does NOT mention a specific role/position, you MUST infer likely roles based on:
+   - Company domain (e.g., @techcompany.com → tech roles, @restaurant.com → restaurant roles)
+   - Company name (e.g., "SalesForce Solutions" → sales roles, "Tech Innovations" → tech roles)
+   - Industry context from the email or company information
+   - Always populate "role1" and "role2" with 2 distinct, realistic roles for that company type
 
 4. "flags" MUST be a JSON object with EXACT keys:
    - "unsubscribe": true if they clearly want no more contact, OR if they say they are "no longer in business", "out of business", "closed", "shut down", or similar
@@ -69,24 +81,28 @@ You MUST follow these rules:
 6. If you are not confident which template_id to pick, choose the CLOSEST one and set "needs_human": true.
 
 7. PRIORITY RULES (when multiple things are present):
+   - CRITICAL: If the message is an out-of-office auto-reply (contains "out of office", "OOO", "away", "on vacation", "will return", "automatic reply", "auto-reply", "I am currently out of the office", "I will be away", "I am currently out", "will respond upon my return", "will respond when I return", "currently unavailable", etc.) → template_id = "OUT_OF_OFFICE". This is the HIGHEST PRIORITY - check for OOO patterns FIRST before any other classification.
    - If they ask to stop, unsubscribe, say "remove me", OR say they are "no longer in business", "out of business", "closed", "shut down" → template_id = "NOT_INTERESTED", flags.unsubscribe = true.
    - If the message is mainly abusive/hostile → choose the closest negative type and set flags.abuse = true.
    - If they send a link to a job posting or ATS and ask us to apply there → template_id = "LINK_TO_APPLY".
    - If they clearly already work with another agency/vendor and refer to that → template_id = "ALREADY_HAVE_AGENCY".
    - If they say yes / sure / send it / go ahead → template_id = "YES_SEND".
-   - If they are positive but not explicitly saying "send the agreement" → template_id = "INTERESTED".
+   - If they express skepticism about the email being legitimate, cold email, or question if you actually have candidates (e.g., "is this a cold email?", "do you actually have candidates?", "is this legit?", "are you just blasting emails?", "why did you contact me?", "you're in Florida why message me?", "you don't have anyone for this job do you?") → template_id = "SKEPTICAL".
+   - If they explicitly list more than one role or ask about multiple roles (e.g., "Sales or Technician?", "Is this for both positions?", "Which role are you referring to?", mentions two or more distinct job titles) → template_id = "ROLE_CLARIFICATION_MULTI", and extract both roles in "role1" and "role2" in vars.
+   - If they express geographic concerns (e.g., "you're way in Florida", "we're in Vancouver", "are your candidates local?", "are you local?", "where are you located?", concerns about location mismatch) → template_id = "GEO_CONCERN".
+   - If they are positive but not explicitly saying "send the agreement" → template_id = "INTERESTED". IMPORTANT: If they don't mention a specific role, infer "role1" and "role2" from company context (domain, name, industry) so the reply can ask about specific positions.
    - If they ask about fees AND position/role in the same message → template_id = "FEES_QUESTION", and make sure to extract "role" in vars if mentioned.
    - If they only ask "What are your fees? Is there a fee?" (without mentioning position) → template_id = "FEES_QUESTION".
    - If they say the fee or percentage is too high specifically → template_id = "PERCENT_TOO_HIGH".
    - If they say it's too expensive in general but not specifically about percent → template_id = "TOO_EXPENSIVE".
    - If they say they don't have a job posted, are confused about why we're reaching out, or mention no open role → template_id = "NO_JOB_POST".
    - If they say they aren't the right person, not the hiring manager, or give a better contact:
-     * If they PROVIDE contact information (email, name, or both) in the message → template_id = "NOT_HIRING_CONTACT", flags.contact_info_provided = true, and include "contact_email" and/or "contact_name" in vars if found.
-     * If they DON'T provide contact information → template_id = "NOT_HIRING_CONTACT", flags.contact_info_provided = false.
-   - If they mention "another person", "someone else", "referral", "know someone", "have someone" who needs the service but DON'T provide contact information → template_id = "NOT_HIRING_CONTACT", flags.contact_info_provided = false.
+     * If they PROVIDE contact information (email, name, or both) in the message AND the contact email is DIFFERENT from the sender's email → template_id = "WRONG_PERSON_WITH_CONTACT", flags.contact_info_provided = true, and include "contact_email" and/or "contact_name" in vars if found.
+     * If they DON'T provide contact information OR the contact email they provide is the SAME as the sender's email → template_id = "WRONG_PERSON_NO_CONTACT", flags.contact_info_provided = false.
+   - If they mention "another person", "someone else", "referral", "know someone", "have someone" who needs the service but DON'T provide contact information → template_id = "WRONG_PERSON_NO_CONTACT", flags.contact_info_provided = false.
    - If they mention working with agencies but are open to hearing more or adding another partner → "ALREADY_HAVE_AGENCY" (not negative).
    - If they say they are not interested, don't need help, or the position is filled → template_id = "NOT_INTERESTED".
-   - If they ask what role we are talking about, say "which position?" or similar → template_id = "ROLE_UNCLEAR".
+   - If they ask what role we are talking about, say "which position?" or similar → template_id = "ROLE_UNCLEAR". IMPORTANT: Only use "ROLE_UNCLEAR" if ALL of these are true: (1) client message clearly references a SINGLE role, (2) does NOT express skepticism, (3) does NOT express geography concerns, (4) does NOT list multiple roles. If any of these conditions are false, use the appropriate template (SKEPTICAL, GEO_CONCERN, or ROLE_CLARIFICATION_MULTI).
    - If they explicitly ask for the agreement/terms/contract (e.g. "send the agreement", "can you send your terms") → template_id = "ASK_AGREEMENT".
 
 8. Make a best effort to always pick one of the allowed template_id values.`;

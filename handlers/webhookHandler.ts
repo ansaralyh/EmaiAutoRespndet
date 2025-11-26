@@ -4,12 +4,27 @@
  */
 
 import { Request, Response } from 'express';
-import { incrementLoop, isProcessed, markProcessed, getLastTemplateId, setLastTemplateId, getLoopCount } from '../state/threadState';
+import { incrementLoop, isProcessed, markProcessed, getLastTemplateId, setLastTemplateId, getLoopCount, isUnsubscribed, markAsUnsubscribed, getAutoRepliesSent, incrementAutoRepliesSent } from '../state/threadState';
 import { fetchThread, getLatestMessage, getMessageText, sendEmail } from '../api/reachinbox';
 import { classifyEmail, EmailMeta } from '../api/openai';
 import { sendAgreement } from '../api/esign';
 import { sendAlert, sendErrorAlert, sendWarningAlert } from '../api/slack';
-import { getScript, requiresESignature, AUTO_SEND_TEMPLATES } from '../config/scripts';
+import { getScript, requiresESignature, AUTO_SEND_TEMPLATES, getFollowUpEmailText } from '../config/scripts';
+
+/**
+ * Whitelist of template_ids allowed after first auto-reply
+ * These are intents that should still trigger automated replies:
+ * - YES_SEND: They want the agreement
+ * - ASK_AGREEMENT: They explicitly ask for agreement
+ * - FEES_QUESTION: They ask about fees (legitimate question)
+ * - ROLE_UNCLEAR: They ask for clarification on the role (legitimate question)
+ */
+const ALLOWED_AFTER_FIRST_REPLY = new Set<string>([
+  'YES_SEND',
+  'ASK_AGREEMENT',
+  'FEES_QUESTION',
+  'ROLE_UNCLEAR',
+]);
 
 /**
  * Handle REPLY_RECEIVED webhook from Reachinbox
@@ -65,6 +80,17 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
     if (isProcessed(message_id)) {
       console.log(`Message already processed, skipping: ${message_id}`);
       res.status(200).json({ message: 'Message already processed' });
+      return;
+    }
+
+    // 1.5. Check if lead is unsubscribed (Do Not Contact) - skip all processing
+    if (isUnsubscribed(lead_email)) {
+      console.log(`Lead is unsubscribed (DNC), skipping all processing: ${lead_email}`);
+      res.status(200).json({ 
+        message: 'Lead is unsubscribed - no reply sent',
+        lead_email,
+      });
+      markProcessed(message_id);
       return;
     }
 
@@ -146,7 +172,167 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
       return;
     }
 
-    const { template_id, vars, flags } = classification;
+    let { template_id, vars, flags } = classification;
+
+    // 4.3.5. Fallback OOO detection (in case OpenAI misses it)
+    const oooPatterns = [
+      /out of office/i,
+      /ooo/i,
+      /currently out/i,
+      /will return/i,
+      /will respond upon/i,
+      /will respond when/i,
+      /automatic reply/i,
+      /auto-reply/i,
+      /away from office/i,
+      /on vacation/i,
+      /currently unavailable/i,
+    ];
+    const isOOO = oooPatterns.some(pattern => pattern.test(messageText));
+    if (isOOO && template_id !== 'OUT_OF_OFFICE') {
+      console.log(`Fallback OOO detection triggered: message contains OOO pattern but was classified as ${template_id}`);
+      // Override classification to OUT_OF_OFFICE
+      template_id = 'OUT_OF_OFFICE';
+      classification.template_id = 'OUT_OF_OFFICE';
+      console.log(`Overriding classification to OUT_OF_OFFICE`);
+    }
+
+    // 4.4. Thread-level stop rule: If thread has already gotten ONE auto-response, stop unless whitelisted
+    const currentAutoReplies = getAutoRepliesSent(effectiveThreadId);
+    if (currentAutoReplies >= 1 && !ALLOWED_AFTER_FIRST_REPLY.has(template_id)) {
+      console.log(`Thread-level stop rule triggered: autoRepliesSent=${currentAutoReplies}, template_id=${template_id}, message_id=${message_id}`);
+      
+      // Determine reason for manual review
+      let reason = 'Human conversation detected - autoresponder stopped';
+      if (template_id === 'INTERESTED') {
+        reason = 'ambiguous / skeptical / multi-role';
+      } else if (template_id === 'NOT_INTERESTED') {
+        reason = 'not interested after initial reply';
+      } else if (template_id === 'TOO_EXPENSIVE' || template_id === 'PERCENT_TOO_HIGH') {
+        reason = 'pricing concern after initial reply';
+      } else {
+        reason = `template_id: ${template_id} - not whitelisted after first reply`;
+      }
+      
+      await sendAlert(`⚠️ Human Conversation Detected — autoresponder stopped`, {
+        event: 'manual_review',
+        thread_id: effectiveThreadId,
+        message_id,
+        lead_email,
+        lead_name,
+        lead_company,
+        template_id,
+        auto_replies_sent: currentAutoReplies,
+        reason,
+      });
+      
+      res.status(200).json({
+        message: 'Human conversation detected - manual review required',
+        template_id,
+        reason,
+        auto_replies_sent: currentAutoReplies,
+      });
+      markProcessed(message_id);
+      return;
+    }
+
+    // 4.5. Handle OUT_OF_OFFICE - Do not send any reply
+    if (template_id === 'OUT_OF_OFFICE') {
+      console.log(`Out of office detected, skipping reply: message_id=${message_id}`);
+      // Optional: Send quiet Slack info alert (non-urgent)
+      await sendAlert(`📧 Out of Office detected - automation paused`, {
+        event: 'ooo_detected',
+        thread_id: effectiveThreadId,
+        message_id,
+        lead_email,
+        lead_name,
+        lead_company,
+      });
+      res.status(200).json({
+        message: 'Out of office detected - no reply sent',
+        template_id,
+      });
+      markProcessed(message_id);
+      return;
+    }
+
+    // 4.5a. Handle UNSUBSCRIBE - Do not send any reply, mark as DNC
+    if (template_id === 'UNSUBSCRIBE') {
+      console.log(`Unsubscribe detected, marking as DNC and skipping reply: message_id=${message_id}, lead_email=${lead_email}`);
+      
+      // Mark lead as unsubscribed (Do Not Contact)
+      if (lead_email) {
+        markAsUnsubscribed(lead_email);
+      }
+      
+      // Send Slack alert
+      await sendAlert(`🚫 Unsubscribe detected – automation disabled`, {
+        event: 'unsubscribe',
+        thread_id: effectiveThreadId,
+        message_id,
+        lead_email,
+        lead_name,
+        lead_company,
+        last_message_snippet: messageText.substring(0, 200), // First 200 chars
+      });
+      
+      res.status(200).json({
+        message: 'Unsubscribe detected - lead marked as DNC, no reply sent',
+        template_id,
+        lead_email,
+      });
+      markProcessed(message_id);
+      return;
+    }
+
+    // 4.6. Handle WRONG_PERSON_NO_CONTACT - Do not send reply, alert for manual review
+    if (template_id === 'WRONG_PERSON_NO_CONTACT') {
+      console.log(`Wrong person, no contact provided, skipping reply: message_id=${message_id}`);
+      await sendAlert(`⚠️ Manual Review Required: Wrong person, no contact provided`, {
+        event: 'manual_review',
+        thread_id: effectiveThreadId,
+        message_id,
+        lead_email,
+        lead_name,
+        lead_company,
+        template_id,
+        reason: 'Wrong person - no contact information provided',
+      });
+      res.status(200).json({
+        message: 'Wrong person, no contact - manual review required',
+        template_id,
+        reason: 'No contact information provided',
+      });
+      markProcessed(message_id);
+      return;
+    }
+
+    // 4.7. Validate WRONG_PERSON_WITH_CONTACT - ensure contact_email is different from lead_email
+    if (template_id === 'WRONG_PERSON_WITH_CONTACT') {
+      const contactEmail = vars.contact_email;
+      if (!contactEmail || contactEmail.toLowerCase().trim() === lead_email?.toLowerCase().trim()) {
+        // Same email bug detected - downgrade to WRONG_PERSON_NO_CONTACT
+        console.log(`Same email bug detected: contact_email=${contactEmail}, lead_email=${lead_email}, downgrading to WRONG_PERSON_NO_CONTACT`);
+        await sendAlert(`⚠️ Manual Review Required: Wrong person - same email detected`, {
+          event: 'manual_review',
+          thread_id: effectiveThreadId,
+          message_id,
+          lead_email,
+          lead_name,
+          lead_company,
+          template_id: 'WRONG_PERSON_WITH_CONTACT',
+          contact_email: contactEmail,
+          reason: 'Contact email same as lead email - invalid contact',
+        });
+        res.status(200).json({
+          message: 'Wrong person - same email detected, manual review required',
+          template_id: 'WRONG_PERSON_NO_CONTACT',
+          reason: 'Contact email same as lead email',
+        });
+        markProcessed(message_id);
+        return;
+      }
+    }
 
     // 5. Check for duplicate template_id BEFORE sending (FIX: Issue 1)
     const lastTemplateId = getLastTemplateId(effectiveThreadId);
@@ -349,6 +535,9 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
         originalMessageId: originalMessageId,
       });
       console.log(`Reply sent successfully: template_id=${template_id}, thread_id=${effectiveThreadId}`);
+      
+      // Increment auto-replies sent counter for this thread
+      incrementAutoRepliesSent(effectiveThreadId);
     } catch (error: any) {
       console.error('Failed to send reply:', error);
       await sendErrorAlert('Failed to send reply via Reachinbox', {
@@ -382,6 +571,71 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
           lead_name,
           lead_company,
         });
+
+        // Send follow-up email after agreement is sent (for YES_SEND and ASK_AGREEMENT)
+        if (template_id === 'YES_SEND' || template_id === 'ASK_AGREEMENT') {
+          try {
+            const followUpText = getFollowUpEmailText();
+            
+            // Build threading information for follow-up email (same as main reply)
+            let followUpInReplyTo: string | undefined;
+            let followUpReferences: string[] = [];
+            let followUpOriginalMessageId: string | undefined;
+
+            if (latestMessage) {
+              followUpInReplyTo = latestMessage.messageId || latestMessage.id;
+              followUpOriginalMessageId = latestMessage.originalMessageId || effectiveThreadId;
+              
+              if (latestMessage.references) {
+                if (Array.isArray(latestMessage.references)) {
+                  if (latestMessage.references.length > 0 && typeof latestMessage.references[0] === 'string' && latestMessage.references[0].includes(' ')) {
+                    followUpReferences = latestMessage.references[0].split(' ').filter((ref: string) => ref.trim().length > 0);
+                  } else {
+                    followUpReferences = latestMessage.references;
+                  }
+                } else if (typeof latestMessage.references === 'string') {
+                  if (latestMessage.references.includes(' ')) {
+                    followUpReferences = latestMessage.references.split(' ').filter((ref: string) => ref.trim().length > 0);
+                  } else {
+                    followUpReferences = [latestMessage.references];
+                  }
+                }
+              }
+              
+              if (followUpOriginalMessageId && !followUpReferences.includes(followUpOriginalMessageId)) {
+                followUpReferences.push(followUpOriginalMessageId);
+              }
+              
+              if (followUpInReplyTo && !followUpReferences.includes(followUpInReplyTo)) {
+                followUpReferences.push(followUpInReplyTo);
+              }
+            } else {
+              followUpInReplyTo = message_id;
+              followUpOriginalMessageId = effectiveThreadId;
+              followUpReferences = message_id ? [message_id] : [];
+              if (effectiveThreadId && !followUpReferences.includes(effectiveThreadId)) {
+                followUpReferences.unshift(effectiveThreadId);
+              }
+            }
+            
+            const toEmail = lead_email || threadFrom;
+            if (toEmail && email_account) {
+              await sendEmail({
+                from: email_account,
+                to: toEmail,
+                subject: threadSubject.startsWith('Re:') ? threadSubject : `Re: ${threadSubject}`,
+                body: followUpText,
+                inReplyTo: followUpInReplyTo,
+                references: followUpReferences,
+                originalMessageId: followUpOriginalMessageId,
+              });
+              console.log(`Follow-up email sent successfully after agreement: template_id=${template_id}, thread_id=${effectiveThreadId}`);
+            }
+          } catch (error: any) {
+            console.error('Failed to send follow-up email:', error);
+            // Don't fail the whole request if follow-up email fails, just log
+          }
+        }
       } catch (error: any) {
         console.error('Failed to send agreement:', error);
         // Agreement send failed alert

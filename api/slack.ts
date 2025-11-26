@@ -34,8 +34,18 @@ export async function sendAlert(
   metadata?: AlertMetadata
 ): Promise<void> {
   try {
-    const payload = {
-      text: message,
+    // Determine color based on event type
+    let color = '#FFA500'; // Default: orange/warning
+    if (metadata?.event === 'error') {
+      color = '#FF0000'; // Red for errors
+    } else if (metadata?.event === 'agreement_sent') {
+      color = '#36A64F'; // Green for success
+    } else if (metadata?.event === 'ooo_detected') {
+      color = '#808080'; // Gray for info
+    }
+
+    const payload: any = {
+      text: message, // Fallback text for notifications
       blocks: [
         {
           type: 'header',
@@ -53,17 +63,11 @@ export async function sendAlert(
           },
         },
       ],
-      attachments: [
-        {
-          color: metadata?.event === 'error' ? 'danger' : 'warning',
-          fields: [] as Array<{ title: string; value: string; short: boolean }>,
-        },
-      ],
     };
 
     // Add metadata fields if provided
+    const fields: Array<{ title: string; value: string; short: boolean }> = [];
     if (metadata) {
-      const fields = payload.attachments[0].fields!;
 
       if (metadata.event) {
         fields.push({
@@ -135,6 +139,22 @@ export async function sendAlert(
         value: new Date().toISOString(),
         short: true,
       });
+
+      // Only add attachments if we have fields
+      if (fields.length > 0) {
+        payload.attachments = [
+          {
+            color: color,
+            fields: fields,
+          },
+        ];
+      }
+    }
+
+    // Validate webhook URL exists
+    if (!config.slack.webhookUrl) {
+      console.error('Slack webhook URL not configured');
+      return;
     }
 
     await axios.post(config.slack.webhookUrl, payload, {
