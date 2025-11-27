@@ -199,17 +199,18 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
         reason = `template_id: ${template_id} - not whitelisted after first reply`;
       }
       
-      await sendAlert(`⚠️ Human Conversation Detected — autoresponder stopped`, {
-        event: 'manual_review',
-        thread_id: effectiveThreadId,
-        message_id,
-        lead_email,
-        lead_name,
-        lead_company,
-        template_id,
-        auto_replies_sent: currentAutoReplies,
-        reason,
-      });
+      // Commented out - client wants only agreement sent notifications
+      // await sendAlert(`⚠️ Human Conversation Detected — autoresponder stopped`, {
+      //   event: 'manual_review',
+      //   thread_id: effectiveThreadId,
+      //   message_id,
+      //   lead_email,
+      //   lead_name,
+      //   lead_company,
+      //   template_id,
+      //   auto_replies_sent: currentAutoReplies,
+      //   reason,
+      // });
       
       res.status(200).json({
         message: 'Human conversation detected - manual review required',
@@ -256,16 +257,17 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
     // 4.6. Handle WRONG_PERSON_NO_CONTACT - Do not send reply, alert for manual review
     if (template_id === 'WRONG_PERSON_NO_CONTACT') {
       console.log(`Wrong person, no contact provided, skipping reply: message_id=${message_id}`);
-      await sendAlert(`⚠️ Manual Review Required: Wrong person, no contact provided`, {
-        event: 'manual_review',
-        thread_id: effectiveThreadId,
-        message_id,
-        lead_email,
-        lead_name,
-        lead_company,
-        template_id,
-        reason: 'Wrong person - no contact information provided',
-      });
+      // Commented out - client wants only agreement sent notifications
+      // await sendAlert(`⚠️ Manual Review Required: Wrong person, no contact provided`, {
+      //   event: 'manual_review',
+      //   thread_id: effectiveThreadId,
+      //   message_id,
+      //   lead_email,
+      //   lead_name,
+      //   lead_company,
+      //   template_id,
+      //   reason: 'Wrong person - no contact information provided',
+      // });
       res.status(200).json({
         message: 'Wrong person, no contact - manual review required',
         template_id,
@@ -281,17 +283,18 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
       if (!contactEmail || contactEmail.toLowerCase().trim() === lead_email?.toLowerCase().trim()) {
         // Same email bug detected - downgrade to WRONG_PERSON_NO_CONTACT
         console.log(`Same email bug detected: contact_email=${contactEmail}, lead_email=${lead_email}, downgrading to WRONG_PERSON_NO_CONTACT`);
-        await sendAlert(`⚠️ Manual Review Required: Wrong person - same email detected`, {
-          event: 'manual_review',
-          thread_id: effectiveThreadId,
-          message_id,
-          lead_email,
-          lead_name,
-          lead_company,
-          template_id: 'WRONG_PERSON_WITH_CONTACT',
-          contact_email: contactEmail,
-          reason: 'Contact email same as lead email - invalid contact',
-        });
+        // Commented out - client wants only agreement sent notifications
+        // await sendAlert(`⚠️ Manual Review Required: Wrong person - same email detected`, {
+        //   event: 'manual_review',
+        //   thread_id: effectiveThreadId,
+        //   message_id,
+        //   lead_email,
+        //   lead_name,
+        //   lead_company,
+        //   template_id: 'WRONG_PERSON_WITH_CONTACT',
+        //   contact_email: contactEmail,
+        //   reason: 'Contact email same as lead email - invalid contact',
+        // });
         res.status(200).json({
           message: 'Wrong person - same email detected, manual review required',
           template_id: 'WRONG_PERSON_NO_CONTACT',
@@ -306,17 +309,18 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
     const lastTemplateId = getLastTemplateId(effectiveThreadId);
     if (template_id === lastTemplateId && lastTemplateId !== undefined) {
       console.log(`Duplicate template_id detected: ${template_id}, message_id=${message_id}`);
-      await sendAlert(`⚠️ Manual Review Required: Repeated template_id: ${template_id}`, {
-        event: 'manual_review',
-        thread_id: effectiveThreadId,
-        message_id,
-        lead_email,
-        lead_name,
-        lead_company,
-        template_id,
-        last_template_id: lastTemplateId,
-        reason: `Repeated template_id: ${template_id} - Same message would be sent twice`,
-      });
+      // Commented out - client wants only agreement sent notifications
+      // await sendAlert(`⚠️ Manual Review Required: Repeated template_id: ${template_id}`, {
+      //   event: 'manual_review',
+      //   thread_id: effectiveThreadId,
+      //   message_id,
+      //   lead_email,
+      //   lead_name,
+      //   lead_company,
+      //   template_id,
+      //   last_template_id: lastTemplateId,
+      //   reason: `Repeated template_id: ${template_id} - Same message would be sent twice`,
+      // });
       res.status(200).json({
         message: 'Manual review required - duplicate template_id',
         template_id,
@@ -353,19 +357,20 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
 
       console.log(`Manual review required: ${reason}, message_id=${message_id}`);
       
-      await sendAlert(`⚠️ Manual Review Required: ${reason}`, {
-        event: 'manual_review',
-        thread_id: effectiveThreadId,
-        message_id,
-        lead_email,
-        lead_name,
-        lead_company,
-        template_id: template_id || 'UNKNOWN',
-        last_template_id: lastTemplateId,
-        more_info_count: moreInfoCount,
-        flags: JSON.stringify(flags),
-        reason,
-      });
+      // Commented out - client wants only agreement sent notifications
+      // await sendAlert(`⚠️ Manual Review Required: ${reason}`, {
+      //   event: 'manual_review',
+      //   thread_id: effectiveThreadId,
+      //   message_id,
+      //   lead_email,
+      //   lead_name,
+      //   lead_company,
+      //   template_id: template_id || 'UNKNOWN',
+      //   last_template_id: lastTemplateId,
+      //   more_info_count: moreInfoCount,
+      //   flags: JSON.stringify(flags),
+      //   reason,
+      // });
 
       res.status(200).json({
         message: 'Manual review required',
@@ -384,15 +389,16 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
     // 8. Check for unknown/invalid template_id (fallback for edge cases)
     if (!template_id || flags.needs_human) {
       console.log(`Unknown classification or needs human: template_id=${template_id}`);
-      await sendAlert(`⚠️ Manual Review Required: Unknown classification or needs human`, {
-        event: 'manual_review',
-        thread_id: effectiveThreadId,
-        message_id,
-        lead_email,
-        template_id: template_id || 'UNKNOWN',
-        flags: JSON.stringify(flags),
-        reason: 'Unknown classification or needs_human flag',
-      });
+      // Commented out - client wants only agreement sent notifications
+      // await sendAlert(`⚠️ Manual Review Required: Unknown classification or needs human`, {
+      //   event: 'manual_review',
+      //   thread_id: effectiveThreadId,
+      //   message_id,
+      //   lead_email,
+      //   template_id: template_id || 'UNKNOWN',
+      //   flags: JSON.stringify(flags),
+      //   reason: 'Unknown classification or needs_human flag',
+      // });
       res.status(200).json({
         message: 'Unknown classification, needs human review',
         template_id,
