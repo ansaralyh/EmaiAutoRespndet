@@ -8,7 +8,7 @@ import { incrementLoop, isProcessed, markProcessed, getLastTemplateId, setLastTe
 import { fetchThread, getLatestMessage, getMessageText, sendEmail } from '../api/reachinbox';
 import { classifyEmail, EmailMeta } from '../api/openai';
 import { sendAgreement } from '../api/esign';
-import { sendAlert, sendErrorAlert, sendWarningAlert } from '../api/slack';
+import { sendAlert } from '../api/slack';
 import { getScript, requiresESignature, AUTO_SEND_TEMPLATES, getFollowUpEmailText } from '../config/scripts';
 
 /**
@@ -129,23 +129,13 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
     } catch (error: any) {
       console.warn('Failed to fetch thread (non-fatal):', error.message);
       // Don't fail - we'll try to proceed with what we have
-      await sendWarningAlert('Could not fetch thread from Reachinbox, using webhook data only', {
-        event: 'warning',
-        thread_id: effectiveThreadId,
-        message_id,
-        error: error.message,
-      });
+      // Removed Slack notification - client wants only agreement sent and manual review alerts
     }
 
     // Validate we have message text
     if (!messageText || messageText.trim().length === 0) {
       console.error('Empty message text - cannot proceed');
-      await sendErrorAlert('Empty message text - cannot classify email', {
-        event: 'error',
-        thread_id: effectiveThreadId,
-        message_id,
-        has_email_replied_body: !!email_replied_body,
-      });
+      // Removed Slack notification - client wants only agreement sent and manual review alerts
       res.status(500).json({ error: 'Empty message text' });
       return;
     }
@@ -162,12 +152,7 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
       classification = await classifyEmail(messageText, meta);
     } catch (error: any) {
       console.error('Classification failed:', error);
-      await sendErrorAlert('OpenAI classification failed', {
-        event: 'error',
-        thread_id: effectiveThreadId,
-        message_id,
-        error: error.message,
-      });
+      // Removed Slack notification - client wants only agreement sent and manual review alerts
       res.status(500).json({ error: 'Classification failed' });
       return;
     }
@@ -239,15 +224,7 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
     // 4.5. Handle OUT_OF_OFFICE - Do not send any reply
     if (template_id === 'OUT_OF_OFFICE') {
       console.log(`Out of office detected, skipping reply: message_id=${message_id}`);
-      // Optional: Send quiet Slack info alert (non-urgent)
-      await sendAlert(`📧 Out of Office detected - automation paused`, {
-        event: 'ooo_detected',
-        thread_id: effectiveThreadId,
-        message_id,
-        lead_email,
-        lead_name,
-        lead_company,
-      });
+      // Removed Slack notification - client wants only agreement sent and manual review alerts
       res.status(200).json({
         message: 'Out of office detected - no reply sent',
         template_id,
@@ -265,16 +242,7 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
         markAsUnsubscribed(lead_email);
       }
       
-      // Send Slack alert
-      await sendAlert(`🚫 Unsubscribe detected – automation disabled`, {
-        event: 'unsubscribe',
-        thread_id: effectiveThreadId,
-        message_id,
-        lead_email,
-        lead_name,
-        lead_company,
-        last_message_snippet: messageText.substring(0, 200), // First 200 chars
-      });
+      // Removed Slack notification - client wants only agreement sent and manual review alerts
       
       res.status(200).json({
         message: 'Unsubscribe detected - lead marked as DNC, no reply sent',
@@ -449,13 +417,7 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
       replyText = getScript(template_id, vars, templateFlags);
     } catch (error: any) {
       console.error('Failed to get script:', error);
-      await sendErrorAlert('Failed to generate reply script', {
-        event: 'error',
-        thread_id: effectiveThreadId,
-        message_id,
-        template_id,
-        error: error.message,
-      });
+      // Removed Slack notification - client wants only agreement sent and manual review alerts
       res.status(500).json({ error: 'Failed to generate reply script' });
       return;
     }
@@ -540,13 +502,7 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
       incrementAutoRepliesSent(effectiveThreadId);
     } catch (error: any) {
       console.error('Failed to send reply:', error);
-      await sendErrorAlert('Failed to send reply via Reachinbox', {
-        event: 'error',
-        thread_id: effectiveThreadId,
-        message_id,
-        template_id,
-        error: error.message,
-      });
+      // Removed Slack notification - client wants only agreement sent and manual review alerts
       res.status(500).json({ error: 'Failed to send reply' });
       return;
     }
@@ -638,18 +594,8 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
         }
       } catch (error: any) {
         console.error('Failed to send agreement:', error);
-        // Agreement send failed alert
-        await sendAlert(`❌ Agreement send failed: ${template_id}`, {
-          event: 'agreement_send_failed',
-          thread_id: effectiveThreadId,
-          message_id,
-          template_id,
-          lead_email,
-          lead_name,
-          lead_company,
-          error: error.message,
-        });
-        // Don't fail the whole request if e-sign fails, just alert
+        // Removed Slack notification - client wants only agreement sent (success) and manual review alerts
+        // Don't fail the whole request if e-sign fails, just log
       }
     }
 
@@ -668,11 +614,7 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
     });
   } catch (error: any) {
     console.error('Unexpected error in webhook handler:', error);
-    await sendErrorAlert('Unexpected error in webhook handler', {
-      event: 'error',
-      error: error.message,
-      stack: error.stack,
-    });
+    // Removed Slack notification - client wants only agreement sent and manual review alerts
     res.status(500).json({ error: 'Internal server error' });
   }
 }
