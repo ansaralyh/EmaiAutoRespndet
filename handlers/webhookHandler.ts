@@ -4,7 +4,7 @@
  */
 
 import { Request, Response } from 'express';
-import { incrementLoop, isProcessed, markProcessed, getLastTemplateId, setLastTemplateId, getLoopCount, isUnsubscribed, markAsUnsubscribed, getAutoRepliesSent, incrementAutoRepliesSent } from '../state/threadState';
+import { incrementLoop, isProcessed, markProcessed, getLastTemplateId, setLastTemplateId, getLoopCount, isUnsubscribed, markAsUnsubscribed, getAutoRepliesSent, incrementAutoRepliesSent, isAgreementSent, markAgreementSent, isManualOwner, markAsManualOwner, getLockedRoles, addLockedRole, setLockedRoles, getLastFrom, setLastFrom } from '../state/threadState';
 import { fetchThread, getLatestMessage, getMessageText, sendEmail } from '../api/reachinbox';
 import { classifyEmail, EmailMeta } from '../api/openai';
 import { sendAgreement } from '../api/esign';
@@ -13,17 +13,22 @@ import { getScript, requiresESignature, AUTO_SEND_TEMPLATES, getFollowUpEmailTex
 
 /**
  * Whitelist of template_ids allowed after first auto-reply
- * These are intents that should still trigger automated replies:
+ * After 1 auto-reply, only allow automation again if the next classification is clearly one of:
  * - YES_SEND: They want the agreement
  * - ASK_AGREEMENT: They explicitly ask for agreement
- * - FEES_QUESTION: They ask about fees (legitimate question)
- * - ROLE_UNCLEAR: They ask for clarification on the role (legitimate question)
+ * - NOT_HIRING: They say they're not hiring (hard stop - no reply)
+ * - NOT_INTERESTED_GENERAL: They're not interested (hard stop - no reply)
+ * - UNSUBSCRIBE: They want to unsubscribe (hard stop - no reply)
+ * - DONE_ALL_SET: They say "we're all set" (hard stop - no reply)
+ * Everything else → manual review + no further email
  */
 const ALLOWED_AFTER_FIRST_REPLY = new Set<string>([
   'YES_SEND',
   'ASK_AGREEMENT',
-  'FEES_QUESTION',
-  'ROLE_UNCLEAR',
+  'NOT_HIRING',
+  'NOT_INTERESTED_GENERAL',
+  'UNSUBSCRIBE',
+  'DONE_ALL_SET',
 ]);
 
 /**
@@ -94,6 +99,17 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
       return;
     }
 
+    // 1.6. Check if thread is manually owned (human has taken over) - skip automation
+    if (isManualOwner(effectiveThreadId)) {
+      console.log(`Thread is manually owned, skipping automation: thread_id=${effectiveThreadId}`);
+      res.status(200).json({ 
+        message: 'Thread is manually owned - no automation',
+        thread_id: effectiveThreadId,
+      });
+      markProcessed(message_id);
+      return;
+    }
+
     // 2. Get message text - prefer email_replied_body from webhook, but always fetch thread for threading info
     let messageText: string = '';
     let latestMessage: any = null;
@@ -125,6 +141,37 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
         // Use email_subject from webhook if available, otherwise use from thread
         threadSubject = email_subject || latestMessage.subject || 'Your inquiry';
         threadFrom = latestMessage.fromEmail || latestMessage.from || lead_email || '';
+        
+        // Check if last outbound message (from us) was manual (doesn't have bot marker)
+        // Look through thread messages to find the last one sent from our email account
+        if (threadData.messages && Array.isArray(threadData.messages)) {
+          const botMarker = 'X-Autobot: alphahire-v1';
+          const ourEmailAccount = email_account?.toLowerCase();
+          
+          // Find last outbound message (from our account)
+          for (let i = threadData.messages.length - 1; i >= 0; i--) {
+            const msg = threadData.messages[i];
+            const msgFrom = (msg.fromEmail || msg.from || '').toLowerCase();
+            
+            // If this message is from our account
+            if (ourEmailAccount && msgFrom === ourEmailAccount.toLowerCase()) {
+              const msgBody = getMessageText(msg) || msg.body || msg.text || msg.html || '';
+              // If last outbound message doesn't have bot marker, it was manual
+              if (!msgBody.includes(botMarker)) {
+                console.log(`Manual reply detected in thread history (no bot marker), marking as manual owner: thread_id=${effectiveThreadId}`);
+                markAsManualOwner(effectiveThreadId);
+                res.status(200).json({ 
+                  message: 'Manual reply detected - thread marked as manually owned',
+                  thread_id: effectiveThreadId,
+                });
+                markProcessed(message_id);
+                return;
+              }
+              // Found our last message with bot marker (it was auto), stop searching
+              break;
+            }
+          }
+        }
       }
     } catch (error: any) {
       console.warn('Failed to fetch thread (non-fatal):', error.message);
@@ -132,11 +179,15 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
       // Removed Slack notification - client wants only agreement sent and manual review alerts
     }
 
-    // Validate we have message text
+    // 3.5. Check for blank/empty messages - classify as AUTO_REPLY_BLANK
     if (!messageText || messageText.trim().length === 0) {
-      console.error('Empty message text - cannot proceed');
-      // Removed Slack notification - client wants only agreement sent and manual review alerts
-      res.status(500).json({ error: 'Empty message text' });
+      console.log(`Blank/empty message detected, treating as AUTO_REPLY_BLANK: message_id=${message_id}`);
+      // Treat as blank auto-reply - skip classification and go straight to handler
+      res.status(200).json({
+        message: 'Blank auto-reply detected - no reply sent',
+        template_id: 'AUTO_REPLY_BLANK',
+      });
+      markProcessed(message_id);
       return;
     }
 
@@ -158,6 +209,15 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
     }
 
     let { template_id, vars, flags } = classification;
+
+    // 4.3. Extract and lock roles when clearly stated
+    // If message clearly states a role (e.g., "Estimator", "Project Manager", etc.), lock it
+    if (vars.role) {
+      addLockedRole(effectiveThreadId, vars.role);
+      console.log(`Role locked: ${vars.role} for thread ${effectiveThreadId}`);
+    }
+    // Also check if role1 or role2 are explicitly mentioned (not inferred)
+    // Note: We'll rely on OpenAI to distinguish explicit mentions vs inferences
 
     // 4.3.5. Fallback OOO detection (in case OpenAI misses it)
     const oooPatterns = [
@@ -191,7 +251,7 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
       let reason = 'Human conversation detected - autoresponder stopped';
       if (template_id === 'INTERESTED') {
         reason = 'ambiguous / skeptical / multi-role';
-      } else if (template_id === 'NOT_INTERESTED') {
+      } else if (template_id === 'NOT_HIRING' || template_id === 'NOT_INTERESTED_GENERAL') {
         reason = 'not interested after initial reply';
       } else if (template_id === 'TOO_EXPENSIVE' || template_id === 'PERCENT_TOO_HIGH') {
         reason = 'pricing concern after initial reply';
@@ -234,6 +294,28 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
       return;
     }
 
+    // 4.5b. Handle AUTO_REPLY_BLANK - Do not send any reply
+    if (template_id === 'AUTO_REPLY_BLANK') {
+      console.log(`Blank auto-reply detected, skipping reply: message_id=${message_id}`);
+      // Don't treat blank auto-reply sender as new contact - don't update lastFrom
+      // Removed Slack notification - client wants only agreement sent and manual review alerts
+      res.status(200).json({
+        message: 'Blank auto-reply detected - no reply sent',
+        template_id,
+      });
+      markProcessed(message_id);
+      return;
+    }
+
+    // 4.5.1. Track active contact (last sender) - update on every inbound message
+    // Use threadFrom (sender email) or lead_email as fallback
+    // Don't update for OOO or blank auto-replies (already handled above)
+    const senderEmail = threadFrom || lead_email;
+    if (senderEmail) {
+      setLastFrom(effectiveThreadId, senderEmail);
+      console.log(`Active contact updated: ${senderEmail} for thread ${effectiveThreadId}`);
+    }
+
     // 4.5a. Handle UNSUBSCRIBE - Do not send any reply, mark as DNC
     if (template_id === 'UNSUBSCRIBE') {
       console.log(`Unsubscribe detected, marking as DNC and skipping reply: message_id=${message_id}, lead_email=${lead_email}`);
@@ -249,6 +331,39 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
         message: 'Unsubscribe detected - lead marked as DNC, no reply sent',
         template_id,
         lead_email,
+      });
+      markProcessed(message_id);
+      return;
+    }
+
+    // 4.5c. Handle NOT_HIRING - Hard stop, no reply
+    if (template_id === 'NOT_HIRING') {
+      console.log(`Not hiring detected, skipping reply: message_id=${message_id}`);
+      res.status(200).json({
+        message: 'Not hiring detected - no reply sent',
+        template_id,
+      });
+      markProcessed(message_id);
+      return;
+    }
+
+    // 4.5d. Handle NOT_INTERESTED_GENERAL - Hard stop, no reply
+    if (template_id === 'NOT_INTERESTED_GENERAL') {
+      console.log(`Not interested detected, skipping reply: message_id=${message_id}`);
+      res.status(200).json({
+        message: 'Not interested detected - no reply sent',
+        template_id,
+      });
+      markProcessed(message_id);
+      return;
+    }
+
+    // 4.5e. Handle DONE_ALL_SET - Hard stop, no reply (polite soft-no)
+    if (template_id === 'DONE_ALL_SET') {
+      console.log(`Done/all set detected, skipping reply: message_id=${message_id}`);
+      res.status(200).json({
+        message: 'Done/all set detected - no reply sent',
+        template_id,
       });
       markProcessed(message_id);
       return;
@@ -277,12 +392,22 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
       return;
     }
 
-    // 4.7. Validate WRONG_PERSON_WITH_CONTACT - ensure contact_email is different from lead_email
+    // 4.7. Validate WRONG_PERSON_WITH_CONTACT - ensure contact_email is different from lead_email AND sender_email
     if (template_id === 'WRONG_PERSON_WITH_CONTACT') {
       const contactEmail = vars.contact_email;
-      if (!contactEmail || contactEmail.toLowerCase().trim() === lead_email?.toLowerCase().trim()) {
+      const senderEmail = threadFrom || lead_email; // Use threadFrom (sender) or fallback to lead_email
+      
+      // Normalize emails for comparison
+      const normalizedContactEmail = contactEmail?.toLowerCase().trim();
+      const normalizedLeadEmail = lead_email?.toLowerCase().trim();
+      const normalizedSenderEmail = senderEmail?.toLowerCase().trim();
+      
+      // Reject if contact_email is same as lead_email OR sender_email
+      if (!contactEmail || 
+          normalizedContactEmail === normalizedLeadEmail || 
+          normalizedContactEmail === normalizedSenderEmail) {
         // Same email bug detected - downgrade to WRONG_PERSON_NO_CONTACT
-        console.log(`Same email bug detected: contact_email=${contactEmail}, lead_email=${lead_email}, downgrading to WRONG_PERSON_NO_CONTACT`);
+        console.log(`Same email bug detected: contact_email=${contactEmail}, lead_email=${lead_email}, sender_email=${senderEmail}, downgrading to WRONG_PERSON_NO_CONTACT`);
         // Commented out - client wants only agreement sent notifications
         // await sendAlert(`⚠️ Manual Review Required: Wrong person - same email detected`, {
         //   event: 'manual_review',
@@ -295,10 +420,14 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
         //   contact_email: contactEmail,
         //   reason: 'Contact email same as lead email - invalid contact',
         // });
+        const reason = normalizedContactEmail === normalizedLeadEmail 
+          ? 'Contact email same as lead email' 
+          : 'Contact email same as sender email';
+        
         res.status(200).json({
           message: 'Wrong person - same email detected, manual review required',
           template_id: 'WRONG_PERSON_NO_CONTACT',
-          reason: 'Contact email same as lead email',
+          reason,
         });
         markProcessed(message_id);
         return;
@@ -412,6 +541,16 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
       console.log(`MORE_INFO loop detected: thread_id=${effectiveThreadId}, count=${getLoopCount(effectiveThreadId)}`);
     }
 
+    // 9.5. Check if roles are locked and prevent role guessing
+    const lockedRolesList = getLockedRoles(effectiveThreadId);
+    if (lockedRolesList.length > 0 && template_id === 'NO_JOB_POST') {
+      console.log(`Roles are locked (${lockedRolesList.join(', ')}), using ROLE_CONFIRMED_FOLLOWUP instead of NO_JOB_POST`);
+      template_id = 'ROLE_CONFIRMED_FOLLOWUP';
+      // Update vars to include locked roles (as string for template)
+      vars.locked_roles = lockedRolesList.join(' and ');
+      vars.role = lockedRolesList[0]; // Use first locked role as primary
+    }
+
     // 10. Generate Reply Script (with flags for conditional logic)
     let replyText;
     try {
@@ -493,11 +632,15 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
         throw new Error('Recipient email address is required for sending the reply');
       }
 
+      // Add bot marker to email body to identify auto-replies
+      const botMarker = '\n\n<!-- X-Autobot: alphahire-v1 -->';
+      const replyTextWithMarker = replyText + botMarker;
+
       await sendEmail({
         from: email_account, // Required: sender's email address
         to: toEmail, // Use the validated recipient
         subject: threadSubject.startsWith('Re:') ? threadSubject : `Re: ${threadSubject}`,
-        body: replyText,
+        body: replyTextWithMarker,
         inReplyTo: inReplyTo,
         references: references,
         originalMessageId: originalMessageId,
@@ -513,30 +656,59 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
       return;
     }
 
-    // 12. Send E-Signature if Required
+    // 12. Send E-Signature if Required (with guardrails)
     if (AUTO_SEND_TEMPLATES.has(template_id)) {
-      try {
-        await sendAgreement({
-          clientEmail: lead_email || '',
-          clientName: lead_name,
-          companyName: lead_company,
-        });
-        console.log(`Agreement sent successfully: template_id=${template_id}, thread_id=${effectiveThreadId}`);
-        
-        // Agreement sent alert: Success case
-        await sendAlert(`📄 Agreement sent successfully: ${template_id}`, {
-          event: 'agreement_sent',
-          thread_id: effectiveThreadId,
-          message_id,
-          template_id,
-          lead_email,
-          lead_name,
-          lead_company,
-        });
+      // Check if agreement was already sent for this thread
+      if (isAgreementSent(effectiveThreadId)) {
+        console.log(`Agreement already sent for thread ${effectiveThreadId}, skipping duplicate send`);
+        // Don't send again, but continue with the rest of the flow
+      }
+      // Check for blocking flags
+      else if (flags.wants_resume_first) {
+        console.log(`Lead wants resume first, skipping agreement send: template_id=${template_id}, thread_id=${effectiveThreadId}`);
+        // Don't send agreement, escalate to manual review or use specific script
+      }
+      else if (flags.wants_call_first) {
+        console.log(`Lead wants call first, skipping agreement send: template_id=${template_id}, thread_id=${effectiveThreadId}`);
+        // Don't send agreement, should respond with call-scheduling script
+      }
+      else if (flags.already_signed) {
+        console.log(`Lead already signed agreement, skipping duplicate send: template_id=${template_id}, thread_id=${effectiveThreadId}`);
+        // Mark as sent to prevent future sends
+        markAgreementSent(effectiveThreadId);
+        // Don't send agreement again
+      }
+      // All checks passed - send agreement
+      else {
+        try {
+          // Use active contact (lastFrom) instead of original lead_email
+          // This ensures agreements go to the latest human respondent, not always the original recipient
+          const recipientEmail = getLastFrom(effectiveThreadId) || lead_email || '';
+          
+          await sendAgreement({
+            clientEmail: recipientEmail,
+            clientName: lead_name,
+            companyName: lead_company,
+          });
+          console.log(`Agreement sent successfully: template_id=${template_id}, thread_id=${effectiveThreadId}`);
+          
+          // Mark agreement as sent for this thread
+          markAgreementSent(effectiveThreadId);
+          
+          // Agreement sent alert: Success case
+          await sendAlert(`📄 Agreement sent successfully: ${template_id}`, {
+            event: 'agreement_sent',
+            thread_id: effectiveThreadId,
+            message_id,
+            template_id,
+            lead_email,
+            lead_name,
+            lead_company,
+          });
 
-        // Send follow-up email after agreement is sent (for YES_SEND and ASK_AGREEMENT)
-        if (template_id === 'YES_SEND' || template_id === 'ASK_AGREEMENT') {
-          try {
+          // Send follow-up email after agreement is sent (for YES_SEND and ASK_AGREEMENT)
+          if (template_id === 'YES_SEND' || template_id === 'ASK_AGREEMENT') {
+            try {
             const followUpText = getFollowUpEmailText();
             
             // Build threading information for follow-up email (same as main reply)
@@ -582,26 +754,31 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
             
             const toEmail = lead_email || threadFrom;
             if (toEmail && email_account) {
+              // Add bot marker to follow-up email body
+              const botMarker = '\n\n<!-- X-Autobot: alphahire-v1 -->';
+              const followUpTextWithMarker = followUpText + botMarker;
+              
               await sendEmail({
                 from: email_account,
                 to: toEmail,
                 subject: threadSubject.startsWith('Re:') ? threadSubject : `Re: ${threadSubject}`,
-                body: followUpText,
+                body: followUpTextWithMarker,
                 inReplyTo: followUpInReplyTo,
                 references: followUpReferences,
                 originalMessageId: followUpOriginalMessageId,
               });
               console.log(`Follow-up email sent successfully after agreement: template_id=${template_id}, thread_id=${effectiveThreadId}`);
             }
-          } catch (error: any) {
-            console.error('Failed to send follow-up email:', error);
-            // Don't fail the whole request if follow-up email fails, just log
+            } catch (error: any) {
+              console.error('Failed to send follow-up email:', error);
+              // Don't fail the whole request if follow-up email fails, just log
+            }
           }
+        } catch (error: any) {
+          console.error('Failed to send agreement:', error);
+          // Removed Slack notification - client wants only agreement sent (success) and manual review alerts
+          // Don't fail the whole request if e-sign fails, just log
         }
-      } catch (error: any) {
-        console.error('Failed to send agreement:', error);
-        // Removed Slack notification - client wants only agreement sent (success) and manual review alerts
-        // Don't fail the whole request if e-sign fails, just log
       }
     }
 

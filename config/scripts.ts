@@ -14,6 +14,8 @@ export interface TemplateVars {
   company_name?: string;
   contact_email?: string;
   contact_name?: string;
+  website_url?: string;
+  locked_roles?: string;
   [key: string]: string | undefined;
 }
 
@@ -85,24 +87,74 @@ If anyone else (HR, hiring manager, or a co-founder) needs to be looped in for f
    * 3. NO_JOB_POST - When There's No Job Post
    */
   NO_JOB_POST: (vars: TemplateVars) => {
-    const role1 = vars.role1 || 'the role';
-    const role2 = vars.role2 || 'similar positions';
+    // Use explicit role guesses with bullet points - avoid "the role and similar positions"
+    const role1 = vars.role1;
+    const role2 = vars.role2;
     
+    // If we have both role guesses, use bullet format
+    if (role1 && role2) {
+      return `Thanks for the reply — sounds like we may have crossed wires.
+
+We're happy to send strong candidates for review — no pressure.
+
+Our terms are a simple 10% fee with a 6-month guarantee.
+
+Based on companies like yours, two common roles we support are:
+
+• ${role1}
+
+• ${role2}
+
+Are those correct? If so, I can send the agreement over.`;
+    }
+    
+    // If we only have one role guess
+    if (role1) {
+      return `Thanks for the reply — sounds like we may have crossed wires.
+
+We're happy to send strong candidates for review — no pressure.
+
+Our terms are a simple 10% fee with a 6-month guarantee.
+
+Based on companies like yours, a common role we support is ${role1}.
+
+Is that correct? If so, I can send the agreement over.`;
+    }
+    
+    // Fallback if no role guesses provided
     return `Thanks for the reply — sounds like we may have crossed wires.
 
 We're happy to send strong candidates for review — no pressure.
 
 Our terms are a simple 10% fee with a 6-month guarantee.
 
-Based on companies your size, these roles seem most likely: ${role1} and ${role2}.
-
-Are those correct? If so, I can send the agreement over.`;
+What roles are you typically hiring for? Once I know, I can send the agreement over.`;
   },
 
   /**
-   * 4. NOT_INTERESTED - When They're Not Interested / Filled the Position
+   * 4a. NOT_HIRING - When They Say They're Not Hiring
    */
-  NOT_INTERESTED: (vars: TemplateVars, flags?: TemplateFlags) => {
+  NOT_HIRING: (vars: TemplateVars, flags?: TemplateFlags) => {
+    const baseMessage = `Totally understand — and appreciate the quick response.`;
+
+    // If unsubscribe flag is true (e.g., "out of business"), don't ask for agreement
+    if (flags?.unsubscribe) {
+      return `${baseMessage}
+
+Thanks for letting me know — I won't reach out again.`;
+    }
+
+    return `${baseMessage}
+
+If that changes or you reopen hiring later, we'd love to help on tough roles under our 10% / 6-month guarantee model.
+
+Would you like me to send the agreement so you have it on file for when you're ready?`;
+  },
+
+  /**
+   * 4b. NOT_INTERESTED_GENERAL - When They're Not Interested (General)
+   */
+  NOT_INTERESTED_GENERAL: (vars: TemplateVars, flags?: TemplateFlags) => {
     const baseMessage = `Totally understand — and appreciate the quick response.`;
 
     // If unsubscribe flag is true (e.g., "out of business"), don't ask for agreement
@@ -157,13 +209,21 @@ If you'd like, I can send the agreement so you can review everything.`;
    * 8. ROLE_UNCLEAR - When the Role Is Unclear
    */
   ROLE_UNCLEAR: (vars: TemplateVars) => {
-    const role = vars.role || 'this position';
+    // Only use role if it's actually provided - avoid "position, position" bug
+    if (vars.role) {
+      return `Thanks for the reply — just to confirm, is this for the ${vars.role} position?
+
+Our terms are a simple 10% fee with a 6-month guarantee, and we have strong candidates ready for roles like this.
+
+Once we're aligned on the role, would you like me to send the agreement?`;
+    }
     
-    return `Thanks for the reply — just to confirm, is this for the ${role} position?
+    // If no role provided, use generic phrasing without repeating "position"
+    return `Thanks for the reply — just to confirm, which role are you looking to fill?
 
-We work at a simple 10% fee with a 6-month guarantee, and we have strong candidates for roles like this.
+Our terms are a simple 10% fee with a 6-month guarantee, and we have strong candidates ready.
 
-Would you like me to send the agreement?`;
+Once we're aligned on the role, would you like me to send the agreement?`;
   },
 
   /**
@@ -325,6 +385,95 @@ Yes — the candidates we're reaching out about are local to ${location}.
 We only open conversations when we already have people screened and available.
 
 If you'd like, I can send the agreement so we can share full details without redactions.`;
+  },
+
+  /**
+   * 17. ASKING_WHICH_ROLE - When They Ask "What Roles?" or "Which Position?"
+   */
+  ASKING_WHICH_ROLE: (vars: TemplateVars) => {
+    const role1 = vars.role1 || 'the role';
+    const role2 = vars.role2;
+    
+    // If we have both role guesses, mention both
+    if (role1 && role2 && role1 !== role2) {
+      return `Great question — based on companies your size, we typically support roles like:
+
+• ${role1}
+• ${role2}
+
+Our terms are a simple 10% fee with a 6-month replacement guarantee.
+
+Which of these roles are you looking to fill? Once I know, I can send the agreement over.`;
+    }
+    
+    // If we only have one role guess
+    if (role1) {
+      return `Great question — based on companies your size, we typically support roles like ${role1}.
+
+Our terms are a simple 10% fee with a 6-month replacement guarantee.
+
+Is that the role you're looking to fill? If so, I can send the agreement over.`;
+    }
+    
+    // Fallback if no role guesses
+    return `Great question — we support a wide range of roles.
+
+Our terms are a simple 10% fee with a 6-month replacement guarantee.
+
+What role are you looking to fill? Once I know, I can send the agreement over.`;
+  },
+
+  /**
+   * 18. ASKING_FEES_ONLY - When They Ask About Fees Only (No Position Mentioned)
+   */
+  ASKING_FEES_ONLY: (vars: TemplateVars) => {
+    return `Great question — we only charge if you hire someone we present.
+
+It's a simple 10% contingency model with a 6-month replacement guarantee.
+
+No upfront fees.
+
+Would you like me to send the agreement?`;
+  },
+
+  /**
+   * 19. ASK_WEBSITE - When They Ask for Website
+   */
+  ASK_WEBSITE: (vars: TemplateVars) => {
+    // Note: Website URL should be provided via vars.website_url or use a default
+    const websiteUrl = vars.website_url || 'https://alphahire.com'; // Update with actual website
+    
+    return `Great question — yes, you can see more about us here: ${websiteUrl}
+
+For quick context: we work on a flat 10% fee with a 6-month replacement guarantee.
+
+If it looks like a fit, I can send over the agreement and a couple of candidate profiles to review.`;
+  },
+
+  /**
+   * 20. DONE_ALL_SET - When They Say "We're All Set" or Similar
+   * NOTE: This template is NOT used - handler skips reply and marks thread as closed
+   * Kept here for reference only
+   */
+  DONE_ALL_SET: (vars: TemplateVars) => {
+    // This template should not be used - handler skips reply for this case
+    // But kept here for reference
+    return `Thanks for letting me know — appreciate it.
+
+If anything changes, feel free to reach out.`;
+  },
+
+  /**
+   * 21. ROLE_CONFIRMED_FOLLOWUP - When Role Is Already Locked/Confirmed
+   */
+  ROLE_CONFIRMED_FOLLOWUP: (vars: TemplateVars) => {
+    const rolesList = vars.locked_roles || vars.role || 'the role';
+    
+    return `Thanks for confirming — understood, you're focused on the ${rolesList} role.
+
+We work on a flat 10% fee with a 6-month replacement guarantee and already have candidates lined up for this type of position.
+
+If that sounds reasonable, would you like me to send the agreement so we can share full candidate details without redactions?`;
   },
 };
 
