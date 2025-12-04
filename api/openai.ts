@@ -36,7 +36,8 @@ You MUST follow these rules:
    - "INTERESTED"
    - "YES_SEND"
    - "NO_JOB_POST"
-   - "NOT_INTERESTED"
+   - "NOT_HIRING"
+   - "NOT_INTERESTED_GENERAL"
    - "UNSUBSCRIBE"
    - "ASK_AGREEMENT"
    - "TOO_EXPENSIVE"
@@ -49,9 +50,15 @@ You MUST follow these rules:
    - "WRONG_PERSON_WITH_CONTACT"
    - "WRONG_PERSON_NO_CONTACT"
    - "OUT_OF_OFFICE"
+   - "AUTO_REPLY_BLANK"
    - "LINK_TO_APPLY"
    - "FEES_QUESTION"
+   - "ASKING_FEES_ONLY"
    - "PERCENT_TOO_HIGH"
+   - "ASKING_WHICH_ROLE"
+   - "ASK_WEBSITE"
+   - "DONE_ALL_SET"
+   - "ROLE_CONFIRMED_FOLLOWUP"
 
 3. "vars" MUST be a JSON object. Include keys ONLY if you are reasonably confident:
    - "role": the main job title they are talking about (e.g. "Account Executive")
@@ -75,6 +82,9 @@ You MUST follow these rules:
    - "wants_more_info": true if they are asking for more details, clarification, or information
    - "needs_human": true if the message is ambiguous, mixed, or too complex to confidently map
    - "contact_info_provided": true if they already provided contact information (email, name, or both) for someone else to contact
+   - "wants_resume_first": true if they explicitly want to see resumes/candidates BEFORE signing any agreement (e.g., "send resume first", "want to see the resumes before signing anything", "show me candidates first", "send blind resume before we send the agreement")
+   - "wants_call_first": true if they want to schedule a call or talk before proceeding (e.g., "let's talk Monday", "set up a time to talk", "can we schedule a call", "get with me on Monday")
+   - "already_signed": true if they indicate they have already signed the agreement (e.g., "we signed it", "just signed", "already signed", "we've signed the agreement")
 
 5. Do NOT generate email replies or natural language. Your ONLY output is the JSON classification.
 
@@ -82,6 +92,7 @@ You MUST follow these rules:
 
 7. PRIORITY RULES (when multiple things are present):
    - CRITICAL: If the message is an out-of-office auto-reply (contains "out of office", "OOO", "away", "on vacation", "will return", "automatic reply", "auto-reply", "I am currently out of the office", "I will be away", "I am currently out", "will respond upon my return", "will respond when I return", "currently unavailable", etc.) → template_id = "OUT_OF_OFFICE". This is the HIGHEST PRIORITY - check for OOO patterns FIRST before any other classification.
+   - CRITICAL: If the message is effectively blank or contains only quoted content, signatures, footers, or auto-reply markers with no actual user text (e.g., empty body, only ">" quoted text, only email signatures, only disclaimers, only "Re:" with no new content) → template_id = "AUTO_REPLY_BLANK". This is SECOND HIGHEST PRIORITY - check for blank/auto-reply patterns after OOO but before other classifications.
    - If they ask to stop, unsubscribe, say "remove me", OR say they are "no longer in business", "out of business", "closed", "shut down" → template_id = "NOT_INTERESTED", flags.unsubscribe = true.
    - If the message is mainly abusive/hostile → choose the closest negative type and set flags.abuse = true.
    - If they send a link to a job posting or ATS and ask us to apply there → template_id = "LINK_TO_APPLY".
@@ -92,7 +103,9 @@ You MUST follow these rules:
    - If they express geographic concerns (e.g., "you're way in Florida", "we're in Vancouver", "are your candidates local?", "are you local?", "where are you located?", concerns about location mismatch) → template_id = "GEO_CONCERN".
    - If they are positive but not explicitly saying "send the agreement" → template_id = "INTERESTED". IMPORTANT: If they don't mention a specific role, infer "role1" and "role2" from company context (domain, name, industry) so the reply can ask about specific positions.
    - If they ask about fees AND position/role in the same message → template_id = "FEES_QUESTION", and make sure to extract "role" in vars if mentioned.
-   - If they only ask "What are your fees? Is there a fee?" (without mentioning position) → template_id = "FEES_QUESTION".
+   - If they ONLY ask "What are your fees? Is there a fee? What do you charge?" (without mentioning position/role) → template_id = "ASKING_FEES_ONLY" (not FEES_QUESTION).
+   - If they ask "What roles?" or "Which position?" or "What positions are you referring to?" (clearly asking which roles) → template_id = "ASKING_WHICH_ROLE". IMPORTANT: Infer "role1" and "role2" from company context (domain, name, industry) so the reply can mention specific roles.
+   - If they ask "Do you have a website?" or "What's your website?" or "Can I see your website?" → template_id = "ASK_WEBSITE".
    - If they say the fee or percentage is too high specifically → template_id = "PERCENT_TOO_HIGH".
    - If they say it's too expensive in general but not specifically about percent → template_id = "TOO_EXPENSIVE".
    - If they say they don't have a job posted, are confused about why we're reaching out, or mention no open role → template_id = "NO_JOB_POST".
@@ -100,9 +113,11 @@ You MUST follow these rules:
      * If they PROVIDE contact information (email, name, or both) in the message AND the contact email is DIFFERENT from the sender's email → template_id = "WRONG_PERSON_WITH_CONTACT", flags.contact_info_provided = true, and include "contact_email" and/or "contact_name" in vars if found.
      * If they DON'T provide contact information OR the contact email they provide is the SAME as the sender's email → template_id = "WRONG_PERSON_NO_CONTACT", flags.contact_info_provided = false.
    - If they mention "another person", "someone else", "referral", "know someone", "have someone" who needs the service but DON'T provide contact information → template_id = "WRONG_PERSON_NO_CONTACT", flags.contact_info_provided = false.
-   - If they mention working with agencies but are open to hearing more or adding another partner → "ALREADY_HAVE_AGENCY" (not negative).
-   - If they say they are not interested, don't need help, or the position is filled → template_id = "NOT_INTERESTED".
-   - If they ask what role we are talking about, say "which position?" or similar → template_id = "ROLE_UNCLEAR". IMPORTANT: Only use "ROLE_UNCLEAR" if ALL of these are true: (1) client message clearly references a SINGLE role, (2) does NOT express skepticism, (3) does NOT express geography concerns, (4) does NOT list multiple roles. If any of these conditions are false, use the appropriate template (SKEPTICAL, GEO_CONCERN, or ROLE_CLARIFICATION_MULTI).
+   - If they clearly mention "we already use X agency" or "we work with a recruiter" or "we're covered" (already have agency) → template_id = "ALREADY_HAVE_AGENCY". IMPORTANT: Only use ALREADY_HAVE_AGENCY when they clearly mention already having/using an agency/recruiter.
+   - If they say "we're not hiring" or "we don't have openings" or "we're not hiring right now" → template_id = "NOT_HIRING".
+   - If they say they are not interested, don't need help, or the position is filled (but NOT specifically about not hiring) → template_id = "NOT_INTERESTED_GENERAL".
+   - If they say "we're all set", "we're good for now", "we're covered", "no need, thanks though", "we're good", "all set" → template_id = "DONE_ALL_SET". This is a polite soft-no indicating the conversation is over.
+   - If they ask what role we are talking about, say "which position?" or similar → template_id = "ROLE_UNCLEAR". IMPORTANT: Only use "ROLE_UNCLEAR" if ALL of these are true: (1) client message clearly references a SINGLE role, (2) does NOT express skepticism, (3) does NOT express geography concerns, (4) does NOT list multiple roles, (5) does NOT explicitly ask "what roles?" or "which roles?". If they explicitly ask "what roles?" or "which roles?" → use "ASKING_WHICH_ROLE" instead. If any other conditions are false, use the appropriate template (SKEPTICAL, GEO_CONCERN, ROLE_CLARIFICATION_MULTI, or ASKING_WHICH_ROLE).
    - If they explicitly ask for the agreement/terms/contract (e.g. "send the agreement", "can you send your terms") → template_id = "ASK_AGREEMENT".
 
 8. Make a best effort to always pick one of the allowed template_id values.`;
@@ -127,6 +142,9 @@ export interface ClassificationResult {
     wants_more_info: boolean;
     needs_human: boolean;
     contact_info_provided?: boolean;
+    wants_resume_first?: boolean;
+    wants_call_first?: boolean;
+    already_signed?: boolean;
   };
 }
 
@@ -201,6 +219,9 @@ export async function classifyEmail(
         wants_more_info: classification.flags.wants_more_info ?? false,
         needs_human: classification.flags.needs_human ?? false,
         contact_info_provided: classification.flags.contact_info_provided ?? false,
+        wants_resume_first: classification.flags.wants_resume_first ?? false,
+        wants_call_first: classification.flags.wants_call_first ?? false,
+        already_signed: classification.flags.already_signed ?? false,
       };
 
       return {
