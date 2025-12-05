@@ -4,7 +4,7 @@
  */
 
 import { Request, Response } from 'express';
-import { incrementLoop, isProcessed, markProcessed, getLastTemplateId, setLastTemplateId, getLoopCount, isUnsubscribed, markAsUnsubscribed, getAutoRepliesSent, incrementAutoRepliesSent, isAgreementSent, markAgreementSent, isManualOwner, markAsManualOwner, getLockedRoles, addLockedRole, setLockedRoles, getLastFrom, setLastFrom } from '../state/threadState';
+import { incrementLoop, isProcessed, markProcessed, getLastTemplateId, setLastTemplateId, getLoopCount, isUnsubscribed, markAsUnsubscribed, getAutoRepliesSent, incrementAutoRepliesSent, isAgreementSent, markAgreementSent, isManualOwner, markAsManualOwner, resetManualOwner, getLockedRoles, addLockedRole, setLockedRoles, getLastFrom, setLastFrom } from '../state/threadState';
 import { fetchThread, getLatestMessage, getMessageText, sendEmail } from '../api/reachinbox';
 import { classifyEmail, EmailMeta } from '../api/openai';
 import { sendAgreement } from '../api/esign';
@@ -108,15 +108,8 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
     }
 
     // 1.6. Check if thread is manually owned (human has taken over) - skip automation
-    if (isManualOwner(effectiveThreadId)) {
-      console.log(`Thread is manually owned, skipping automation: thread_id=${effectiveThreadId}`);
-      res.status(200).json({ 
-        message: 'Thread is manually owned - no automation',
-        thread_id: effectiveThreadId,
-      });
-      markProcessed(message_id);
-      return;
-    }
+    // Note: We'll check thread history later and reset if it was incorrectly marked (old messages)
+    // For now, continue processing - the reset will happen during thread history check
 
     // 2. Get message text - prefer email_replied_body from webhook, but always fetch thread for threading info
     let messageText: string = '';
@@ -175,6 +168,11 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
               // Old messages don't have markers, so we can't determine if they were manual
               if (messageDate && messageDate < BOT_MARKER_FEATURE_DATE) {
                 console.log(`Skipping manual detection for old message (before bot marker feature): ${messageDate.toISOString()}, thread_id=${effectiveThreadId}`);
+                // If thread was previously marked as manual owner (false positive), reset it
+                if (isManualOwner(effectiveThreadId)) {
+                  console.log(`Resetting manual owner flag for thread (was incorrectly marked due to old message): thread_id=${effectiveThreadId}`);
+                  resetManualOwner(effectiveThreadId);
+                }
                 // Don't mark as manual - this is an old message without markers
                 break;
               }
