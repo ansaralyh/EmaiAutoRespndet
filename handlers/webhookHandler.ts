@@ -32,6 +32,14 @@ const ALLOWED_AFTER_FIRST_REPLY = new Set<string>([
 ]);
 
 /**
+ * Date when bot marker feature was deployed
+ * Only check for manual replies in messages sent after this date
+ * Messages before this date don't have bot markers, so we skip the check
+ * Set to today's date - all messages from this point forward will work with automation
+ */
+const BOT_MARKER_FEATURE_DATE = new Date('2025-12-06T00:00:00Z'); // Today's date - automation works from now onward
+
+/**
  * Handle REPLY_RECEIVED webhook from Reachinbox
  * @param req - Express request object
  * @param res - Express response object
@@ -144,6 +152,7 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
         
         // Check if last outbound message (from us) was manual (doesn't have bot marker)
         // Look through thread messages to find the last one sent from our email account
+        // IMPORTANT: Only check messages sent AFTER bot marker feature was deployed
         if (threadData.messages && Array.isArray(threadData.messages)) {
           const botMarker = 'X-Autobot: alphahire-v1';
           const ourEmailAccount = email_account?.toLowerCase();
@@ -155,6 +164,22 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
             
             // If this message is from our account
             if (ourEmailAccount && msgFrom === ourEmailAccount.toLowerCase()) {
+              // Check message date - only check messages sent after bot marker feature was deployed
+              const messageDate = msg.timestamp 
+                ? new Date(msg.timestamp) 
+                : msg.created_at 
+                  ? new Date(msg.created_at) 
+                  : null;
+              
+              // If message is old (before bot marker feature), skip the check
+              // Old messages don't have markers, so we can't determine if they were manual
+              if (messageDate && messageDate < BOT_MARKER_FEATURE_DATE) {
+                console.log(`Skipping manual detection for old message (before bot marker feature): ${messageDate.toISOString()}, thread_id=${effectiveThreadId}`);
+                // Don't mark as manual - this is an old message without markers
+                break;
+              }
+              
+              // Only check recent messages (after bot marker feature) for bot marker
               const msgBody = getMessageText(msg) || msg.body || msg.text || msg.html || '';
               // If last outbound message doesn't have bot marker, it was manual
               if (!msgBody.includes(botMarker)) {
