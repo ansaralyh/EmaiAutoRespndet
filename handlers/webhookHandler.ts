@@ -89,11 +89,34 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
 
     console.log(`Processing webhook: message_id=${message_id}, thread_id=${effectiveThreadId}`);
 
+    // 2. Get message text early (before duplicate check) - needed for content-based duplicate detection
+    let messageText: string = '';
+    let latestMessage: any = null;
+    let threadSubject: string = 'Your inquiry';
+    let threadFrom: string = lead_email || '';
+
+    // Try to use email_replied_body from webhook first (most reliable)
+    if (email_replied_body && email_replied_body.trim().length > 0) {
+      messageText = email_replied_body.trim();
+      console.log(`Using email_replied_body from webhook (length: ${messageText.length})`);
+    }
+
     // Duplicate prevention: Check if message was already processed
-    if (isProcessed(message_id)) {
+    // IMPORTANT: If message_id equals thread_id, Reachinbox is likely reusing the thread_id as message_id for replies
+    // This is a Reachinbox bug - we need to handle it by processing these messages anyway
+    const messageIdEqualsThreadId = message_id === effectiveThreadId;
+    
+    if (isProcessed(message_id) && !messageIdEqualsThreadId) {
+      // Normal case: message_id is unique and we've seen it before - skip
       console.log(`Message already processed, skipping: ${message_id}`);
       res.status(200).json({ message: 'Message already processed' });
       return;
+    }
+    
+    // If message_id equals thread_id, this is likely a new reply that Reachinbox incorrectly identified
+    // Process it anyway (but we'll still mark it as processed at the end to prevent immediate duplicates)
+    if (messageIdEqualsThreadId && isProcessed(message_id)) {
+      console.log(`Message ID equals thread ID - Reachinbox may be reusing thread_id as message_id for replies. Processing anyway to handle new reply content.`);
     }
 
     // 1.5. Check if lead is unsubscribed (Do Not Contact) - skip all processing
@@ -110,18 +133,6 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
     // 1.6. Check if thread is manually owned (human has taken over) - skip automation
     // Note: We'll check thread history later and reset if it was incorrectly marked (old messages)
     // For now, continue processing - the reset will happen during thread history check
-
-    // 2. Get message text - prefer email_replied_body from webhook, but always fetch thread for threading info
-    let messageText: string = '';
-    let latestMessage: any = null;
-    let threadSubject: string = 'Your inquiry';
-    let threadFrom: string = lead_email || '';
-
-    // Try to use email_replied_body from webhook first (most reliable)
-    if (email_replied_body && email_replied_body.trim().length > 0) {
-      messageText = email_replied_body.trim();
-      console.log(`Using email_replied_body from webhook (length: ${messageText.length})`);
-    }
 
     // Always fetch thread data to get proper threading information (subject, references, etc.)
     let threadData;
@@ -145,7 +156,7 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
         
         // Check if last outbound message (from us) was manual (doesn't have bot marker)
         // Look through thread messages to find the last one sent from our email account
-        // IMPORTANT: Only check messages sent AFTER bot marker feature was deployed
+        // IMPORTANT: Only check automation REPLIES, not campaign/initial emails
         if (threadData.messages && Array.isArray(threadData.messages)) {
           const botMarker = 'X-Autobot: alphahire-v1';
           const ourEmailAccount = email_account?.toLowerCase();
@@ -157,6 +168,26 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
             
             // If this message is from our account
             if (ourEmailAccount && msgFrom === ourEmailAccount.toLowerCase()) {
+              // Check if this is a campaign email (initial outreach) or an automation reply
+              // Campaign emails are the first message in the thread and don't have inReplyTo/references
+              // Automation replies are responses to lead emails and have inReplyTo/references
+              const isReply = !!(msg.inReplyTo || msg.references || (msg.subject && msg.subject.toLowerCase().startsWith('re:')));
+              const isFirstMessage = i === 0; // First message in thread is usually the campaign email
+              
+              // Skip bot marker check for campaign emails (initial outreach)
+              // Only check for bot markers in automation REPLIES
+              if (!isReply || isFirstMessage) {
+                console.log(`Skipping bot marker check - this appears to be a campaign email (initial outreach), not an automation reply: thread_id=${effectiveThreadId}, isReply=${isReply}, isFirstMessage=${isFirstMessage}`);
+                // Campaign emails don't have bot markers, so we skip the check
+                // If thread was previously marked as manual owner (false positive), reset it
+                if (isManualOwner(effectiveThreadId)) {
+                  console.log(`Resetting manual owner flag for thread (was incorrectly marked due to campaign email): thread_id=${effectiveThreadId}`);
+                  resetManualOwner(effectiveThreadId);
+                }
+                // Don't mark as manual - this is a campaign email, not an automation reply
+                break;
+              }
+              
               // Check message date - only check messages sent after bot marker feature was deployed
               const messageDate = msg.timestamp 
                 ? new Date(msg.timestamp) 
@@ -177,11 +208,11 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
                 break;
               }
               
-              // Only check recent messages (after bot marker feature) for bot marker
+              // Only check recent automation replies (after bot marker feature) for bot marker
               const msgBody = getMessageText(msg) || msg.body || msg.text || msg.html || '';
-              // If last outbound message doesn't have bot marker, it was manual
+              // If last outbound automation reply doesn't have bot marker, it was manual
               if (!msgBody.includes(botMarker)) {
-                console.log(`Manual reply detected in thread history (no bot marker), marking as manual owner: thread_id=${effectiveThreadId}`);
+                console.log(`Manual reply detected in thread history (no bot marker in automation reply), marking as manual owner: thread_id=${effectiveThreadId}`);
                 markAsManualOwner(effectiveThreadId);
                 res.status(200).json({ 
                   message: 'Manual reply detected - thread marked as manually owned',
@@ -190,7 +221,7 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
                 markProcessed(message_id);
                 return;
               }
-              // Found our last message with bot marker (it was auto), stop searching
+              // Found our last automation reply with bot marker (it was auto), stop searching
               break;
             }
           }
