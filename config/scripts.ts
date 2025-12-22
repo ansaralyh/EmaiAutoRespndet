@@ -424,9 +424,9 @@ What role are you looking to fill? Once I know, I can send the agreement over.`;
   },
 
   /**
-   * 18. ASKING_FEES_ONLY - When They Ask About Fees Only (No Position Mentioned)
+   * 18. ASK_FEES_ONLY - When They Ask About Fees Only (No Position Mentioned)
    */
-  ASKING_FEES_ONLY: (vars: TemplateVars) => {
+  ASK_FEES_ONLY: (vars: TemplateVars) => {
     return `Great question — we only charge if you hire someone we present.
 
 It's a simple 10% contingency model with a 6-month replacement guarantee.
