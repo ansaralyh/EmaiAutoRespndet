@@ -10,10 +10,11 @@ import { classifyEmail, EmailMeta } from '../api/openai';
 import { sendAgreement } from '../api/esign';
 import { sendAlert } from '../api/slack';
 import { getScript, requiresESignature, AUTO_SEND_TEMPLATES, getFollowUpEmailText } from '../config/scripts';
+import { decideAutoRespond, Classification, Signal } from '../src/confidence';
 
 /**
- * Whitelist of template_ids allowed after first auto-reply
- * After 1 auto-reply, only allow automation again if the next classification is clearly one of:
+ * Whitelist of template_ids allowed after 2 auto-replies
+ * After 2 auto-replies, only allow automation again if the next classification is clearly one of:
  * - YES_SEND: They want the agreement
  * - ASK_AGREEMENT: They explicitly ask for agreement
  * - NOT_HIRING: They say they're not hiring (hard stop - no reply)
@@ -21,6 +22,9 @@ import { getScript, requiresESignature, AUTO_SEND_TEMPLATES, getFollowUpEmailTex
  * - UNSUBSCRIBE: They want to unsubscribe (hard stop - no reply)
  * - DONE_ALL_SET: They say "we're all set" (hard stop - no reply)
  * Everything else → manual review + no further email
+ * 
+ * NOTE: This is now handled by the confidence system (DEPTH_WHITELIST)
+ * Kept here for reference only
  */
 const ALLOWED_AFTER_FIRST_REPLY = new Set<string>([
   'YES_SEND',
@@ -262,125 +266,60 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
       return;
     }
 
-    let { template_id, vars, flags } = classification;
+    // 4.3. Convert classification to confidence system format
+    const classificationForConfidence: Classification = {
+      template_id: classification.template_id,
+      signals: classification.signals as Signal[],
+      extracted: classification.extracted || {},
+    };
 
-    // 4.3. Extract and lock roles when clearly stated
-    // If message clearly states a role (e.g., "Estimator", "Project Manager", etc.), lock it
-    if (vars.role) {
-      addLockedRole(effectiveThreadId, vars.role);
-      console.log(`Role locked: ${vars.role} for thread ${effectiveThreadId}`);
-    }
-    // Also check if role1 or role2 are explicitly mentioned (not inferred)
-    // Note: We'll rely on OpenAI to distinguish explicit mentions vs inferences
-
-    // 4.3.5. Fallback OOO detection (in case OpenAI misses it)
-    const oooPatterns = [
-      /out of office/i,
-      /ooo/i,
-      /currently out/i,
-      /will return/i,
-      /will respond upon/i,
-      /will respond when/i,
-      /automatic reply/i,
-      /auto-reply/i,
-      /away from office/i,
-      /on vacation/i,
-      /currently unavailable/i,
-    ];
-    const isOOO = oooPatterns.some(pattern => pattern.test(messageText));
-    if (isOOO && template_id !== 'OUT_OF_OFFICE') {
-      console.log(`Fallback OOO detection triggered: message contains OOO pattern but was classified as ${template_id}`);
-      // Override classification to OUT_OF_OFFICE
-      template_id = 'OUT_OF_OFFICE';
-      classification.template_id = 'OUT_OF_OFFICE';
-      console.log(`Overriding classification to OUT_OF_OFFICE`);
+    // 4.4. Extract and lock roles when clearly stated
+    const extracted = classification.extracted || {};
+    if (extracted.role) {
+      addLockedRole(effectiveThreadId, extracted.role);
+      console.log(`Role locked: ${extracted.role} for thread ${effectiveThreadId}`);
     }
 
-    // 4.4. Thread-level stop rule: If thread has already gotten ONE auto-response, stop unless whitelisted
-    const currentAutoReplies = getAutoRepliesSent(effectiveThreadId);
-    if (currentAutoReplies >= 1 && !ALLOWED_AFTER_FIRST_REPLY.has(template_id)) {
-      console.log(`Thread-level stop rule triggered: autoRepliesSent=${currentAutoReplies}, template_id=${template_id}, message_id=${message_id}`);
-      
-      // Determine reason for manual review
-      let reason = 'Human conversation detected - autoresponder stopped';
-      if (template_id === 'INTERESTED') {
-        reason = 'ambiguous / skeptical / multi-role';
-      } else if (template_id === 'NOT_HIRING' || template_id === 'NOT_INTERESTED_GENERAL') {
-        reason = 'not interested after initial reply';
-      } else if (template_id === 'TOO_EXPENSIVE' || template_id === 'PERCENT_TOO_HIGH') {
-        reason = 'pricing concern after initial reply';
-      } else {
-        reason = `template_id: ${template_id} - not whitelisted after first reply`;
-      }
-      
-      // Commented out - client wants only agreement sent notifications
-      // await sendAlert(`⚠️ Human Conversation Detected — autoresponder stopped`, {
-      //   event: 'manual_review',
-      //   thread_id: effectiveThreadId,
-      //   message_id,
-      //   lead_email,
-      //   lead_name,
-      //   lead_company,
-      //   template_id,
-      //   auto_replies_sent: currentAutoReplies,
-      //   reason,
-      // });
-      
-      res.status(200).json({
-        message: 'Human conversation detected - manual review required',
-        template_id,
-        reason,
-        auto_replies_sent: currentAutoReplies,
-      });
-      markProcessed(message_id);
-      return;
-    }
-
-    // 4.5. Handle OUT_OF_OFFICE - Do not send any reply
-    if (template_id === 'OUT_OF_OFFICE') {
-      console.log(`Out of office detected, skipping reply: message_id=${message_id}`);
-      // Removed Slack notification - client wants only agreement sent and manual review alerts
-      res.status(200).json({
-        message: 'Out of office detected - no reply sent',
-        template_id,
-      });
-      markProcessed(message_id);
-      return;
-    }
-
-    // 4.5b. Handle AUTO_REPLY_BLANK - Do not send any reply
-    if (template_id === 'AUTO_REPLY_BLANK') {
-      console.log(`Blank auto-reply detected, skipping reply: message_id=${message_id}`);
-      // Don't treat blank auto-reply sender as new contact - don't update lastFrom
-      // Removed Slack notification - client wants only agreement sent and manual review alerts
-      res.status(200).json({
-        message: 'Blank auto-reply detected - no reply sent',
-        template_id,
-      });
-      markProcessed(message_id);
-      return;
-    }
-
-    // 4.5.1. Track active contact (last sender) - update on every inbound message
+    // 4.5. Track active contact (last sender) - update on every inbound message
     // Use threadFrom (sender email) or lead_email as fallback
-    // Don't update for OOO or blank auto-replies (already handled above)
     const senderEmail = threadFrom || lead_email;
     if (senderEmail) {
       setLastFrom(effectiveThreadId, senderEmail);
       console.log(`Active contact updated: ${senderEmail} for thread ${effectiveThreadId}`);
     }
 
-    // 4.5a. Handle UNSUBSCRIBE - Do not send any reply, mark as DNC
+    // 4.6. Build thread state for confidence system
+    const currentAutoReplies = getAutoRepliesSent(effectiveThreadId);
+    const processedMessageIds = new Set<string>();
+    if (isProcessed(message_id)) {
+      processedMessageIds.add(message_id);
+    }
+
+    const threadState = {
+      autoRepliesSent: currentAutoReplies,
+      agreementSent: isAgreementSent(effectiveThreadId),
+      manualOwner: isManualOwner(effectiveThreadId),
+      lastTemplateSent: getLastTemplateId(effectiveThreadId) || undefined,
+      processedMessageIds: processedMessageIds.size > 0 ? processedMessageIds : undefined,
+    };
+
+    // 4.7. Use confidence system to decide if we should auto-respond
+    const decision = decideAutoRespond({
+      classification: classificationForConfidence,
+      bodyText: messageText,
+      threadState,
+      messageId: message_id,
+      confidenceThreshold: 0.90, // Default threshold
+    });
+
+    let template_id = decision.effectiveTemplateId; // Use let since we may modify it later
+
+    // 4.8. Handle hard stops (UNSUBSCRIBE, OUT_OF_OFFICE, AUTO_REPLY_BLANK, DONE_ALL_SET)
     if (template_id === 'UNSUBSCRIBE') {
       console.log(`Unsubscribe detected, marking as DNC and skipping reply: message_id=${message_id}, lead_email=${lead_email}`);
-      
-      // Mark lead as unsubscribed (Do Not Contact)
       if (lead_email) {
         markAsUnsubscribed(lead_email);
       }
-      
-      // Removed Slack notification - client wants only agreement sent and manual review alerts
-      
       res.status(200).json({
         message: 'Unsubscribe detected - lead marked as DNC, no reply sent',
         template_id,
@@ -390,29 +329,26 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
       return;
     }
 
-    // 4.5c. Handle NOT_HIRING - Hard stop, no reply
-    if (template_id === 'NOT_HIRING') {
-      console.log(`Not hiring detected, skipping reply: message_id=${message_id}`);
+    if (template_id === 'OUT_OF_OFFICE') {
+      console.log(`Out of office detected, skipping reply: message_id=${message_id}`);
       res.status(200).json({
-        message: 'Not hiring detected - no reply sent',
+        message: 'Out of office detected - no reply sent',
         template_id,
       });
       markProcessed(message_id);
       return;
     }
 
-    // 4.5d. Handle NOT_INTERESTED_GENERAL - Hard stop, no reply
-    if (template_id === 'NOT_INTERESTED_GENERAL') {
-      console.log(`Not interested detected, skipping reply: message_id=${message_id}`);
+    if (template_id === 'AUTO_REPLY_BLANK') {
+      console.log(`Blank auto-reply detected, skipping reply: message_id=${message_id}`);
       res.status(200).json({
-        message: 'Not interested detected - no reply sent',
+        message: 'Blank auto-reply detected - no reply sent',
         template_id,
       });
       markProcessed(message_id);
       return;
     }
 
-    // 4.5e. Handle DONE_ALL_SET - Hard stop, no reply (polite soft-no)
     if (template_id === 'DONE_ALL_SET') {
       console.log(`Done/all set detected, skipping reply: message_id=${message_id}`);
       res.status(200).json({
@@ -422,6 +358,39 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
       markProcessed(message_id);
       return;
     }
+
+    // 4.9. If confidence decision says NO, send manual review alert and stop
+    if (!decision.okToAutoRespond) {
+      console.log(`Confidence check failed: confidence=${decision.confidence.toFixed(2)}, blocking reasons: ${decision.blockingReasons.join(', ')}`);
+      
+      // Send manual review Slack alert with new format
+      await sendAlert(`🟡 Manual Review (confidence ${decision.confidence.toFixed(2)})`, {
+        event: 'manual_review',
+        thread_id: effectiveThreadId,
+        message_id,
+        lead_email,
+        lead_name,
+        lead_company,
+        predicted_template_id: template_id,
+        confidence: decision.confidence,
+        blocking_reasons: decision.blockingReasons,
+        normalized_signals: decision.normalizedSignals,
+        snippet: messageText.substring(0, 200),
+        suggested_next_step: `Manual reply needed: ${decision.blockingReasons.join(', ')}`,
+      });
+
+      res.status(200).json({
+        message: 'Manual review required - confidence below threshold',
+        template_id,
+        confidence: decision.confidence,
+        blocking_reasons: decision.blockingReasons,
+      });
+      markProcessed(message_id);
+      return;
+    }
+
+    // 4.10. Confidence check passed - proceed with auto-response
+    console.log(`Confidence check passed: confidence=${decision.confidence.toFixed(2)}, template_id=${template_id}`);
 
     // 4.6. Handle WRONG_PERSON_NO_CONTACT - Do not send reply, alert for manual review
     if (template_id === 'WRONG_PERSON_NO_CONTACT') {
@@ -446,10 +415,10 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
       return;
     }
 
-    // 4.7. Validate WRONG_PERSON_WITH_CONTACT - ensure contact_email is different from lead_email AND sender_email
+    // 4.11. Validate WRONG_PERSON_WITH_CONTACT - ensure contact_email is different from lead_email AND sender_email
     if (template_id === 'WRONG_PERSON_WITH_CONTACT') {
-      const contactEmail = vars.contact_email;
-      const senderEmail = threadFrom || lead_email; // Use threadFrom (sender) or fallback to lead_email
+      const contactEmail = extracted.new_contact_email;
+      const senderEmail = threadFrom || lead_email;
       
       // Normalize emails for comparison
       const normalizedContactEmail = contactEmail?.toLowerCase().trim();
@@ -460,158 +429,60 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
       if (!contactEmail || 
           normalizedContactEmail === normalizedLeadEmail || 
           normalizedContactEmail === normalizedSenderEmail) {
-        // Same email bug detected - downgrade to WRONG_PERSON_NO_CONTACT
-        console.log(`Same email bug detected: contact_email=${contactEmail}, lead_email=${lead_email}, sender_email=${senderEmail}, downgrading to WRONG_PERSON_NO_CONTACT`);
-        // Commented out - client wants only agreement sent notifications
-        // await sendAlert(`⚠️ Manual Review Required: Wrong person - same email detected`, {
-        //   event: 'manual_review',
-        //   thread_id: effectiveThreadId,
-        //   message_id,
-        //   lead_email,
-        //   lead_name,
-        //   lead_company,
-        //   template_id: 'WRONG_PERSON_WITH_CONTACT',
-        //   contact_email: contactEmail,
-        //   reason: 'Contact email same as lead email - invalid contact',
-        // });
-        const reason = normalizedContactEmail === normalizedLeadEmail 
-          ? 'Contact email same as lead email' 
-          : 'Contact email same as sender email';
-        
+        // Same email bug detected - this should have been caught by confidence system, but double-check
+        console.log(`Same email bug detected: contact_email=${contactEmail}, lead_email=${lead_email}, sender_email=${senderEmail}`);
+        await sendAlert(`🟡 Manual Review (confidence ${decision.confidence.toFixed(2)})`, {
+          event: 'manual_review',
+          thread_id: effectiveThreadId,
+          message_id,
+          lead_email,
+          lead_name,
+          lead_company,
+          predicted_template_id: 'WRONG_PERSON_NO_CONTACT',
+          confidence: decision.confidence,
+          blocking_reasons: ['Contact email same as lead/sender email'],
+          normalized_signals: decision.normalizedSignals,
+          snippet: messageText.substring(0, 200),
+        });
         res.status(200).json({
           message: 'Wrong person - same email detected, manual review required',
           template_id: 'WRONG_PERSON_NO_CONTACT',
-          reason,
         });
         markProcessed(message_id);
         return;
       }
     }
 
-    // 5. Check for duplicate template_id BEFORE sending (FIX: Issue 1)
-    const lastTemplateId = getLastTemplateId(effectiveThreadId);
-    if (template_id === lastTemplateId && lastTemplateId !== undefined) {
-      console.log(`Duplicate template_id detected: ${template_id}, message_id=${message_id}`);
-      // Commented out - client wants only agreement sent notifications
-      // await sendAlert(`⚠️ Manual Review Required: Repeated template_id: ${template_id}`, {
-      //   event: 'manual_review',
-      //   thread_id: effectiveThreadId,
-      //   message_id,
-      //   lead_email,
-      //   lead_name,
-      //   lead_company,
-      //   template_id,
-      //   last_template_id: lastTemplateId,
-      //   reason: `Repeated template_id: ${template_id} - Same message would be sent twice`,
-      // });
-      res.status(200).json({
-        message: 'Manual review required - duplicate template_id',
-        template_id,
-        reason: 'Repeated template_id detected',
-      });
-      return;
-    }
-
-    // 6. Check for manual review conditions (other casess)
-    // Get current loop count before incrementing (if applicable)
-    const currentLoopCount = getLoopCount(effectiveThreadId);
-    const moreInfoCount = flags.wants_more_info ? currentLoopCount + 1 : currentLoopCount;
-    
-    const needsManualReview = 
-      template_id === 'UNCLASSIFIED' ||
-      (flags.wants_more_info && moreInfoCount >= 2) ||
-      flags.unsubscribe ||
-      flags.abuse ||
-      flags.bounce;
-
-    if (needsManualReview) {
-      let reason = 'Manual review required';
-      if (template_id === 'UNCLASSIFIED') {
-        reason = 'UNCLASSIFIED template_id';
-      } else if (flags.wants_more_info && moreInfoCount >= 2) {
-        reason = `MORE_INFO loop count >= 2 (current: ${moreInfoCount})`;
-      } else if (flags.unsubscribe) {
-        reason = 'Unsubscribe flag detected';
-      } else if (flags.abuse) {
-        reason = 'Abuse flag detected';
-      } else if (flags.bounce) {
-        reason = 'Bounce flag detected';
-      }
-
-      console.log(`Manual review required: ${reason}, message_id=${message_id}`);
-      
-      // Commented out - client wants only agreement sent notifications
-      // await sendAlert(`⚠️ Manual Review Required: ${reason}`, {
-      //   event: 'manual_review',
-      //   thread_id: effectiveThreadId,
-      //   message_id,
-      //   lead_email,
-      //   lead_name,
-      //   lead_company,
-      //   template_id: template_id || 'UNKNOWN',
-      //   last_template_id: lastTemplateId,
-      //   more_info_count: moreInfoCount,
-      //   flags: JSON.stringify(flags),
-      //   reason,
-      // });
-
-      res.status(200).json({
-        message: 'Manual review required',
-        template_id,
-        reason,
-      });
-      return;
-    }
-
-    // 7. Check if contact info is provided and skip reply if appropriate (FIX: Issue 3 & 4)
-    if (template_id === 'NOT_HIRING_CONTACT' && flags.contact_info_provided) {
-      // Contact info already provided - send acknowledgment instead of asking again
-      console.log(`Contact info already provided for NOT_HIRING_CONTACT, sending acknowledgment`);
-    }
-
-    // 8. Check for unknown/invalid template_id (fallback for edge cases)
-    if (!template_id || flags.needs_human) {
-      console.log(`Unknown classification or needs human: template_id=${template_id}`);
-      // Commented out - client wants only agreement sent notifications
-      // await sendAlert(`⚠️ Manual Review Required: Unknown classification or needs human`, {
-      //   event: 'manual_review',
-      //   thread_id: effectiveThreadId,
-      //   message_id,
-      //   lead_email,
-      //   template_id: template_id || 'UNKNOWN',
-      //   flags: JSON.stringify(flags),
-      //   reason: 'Unknown classification or needs_human flag',
-      // });
-      res.status(200).json({
-        message: 'Unknown classification, needs human review',
-        template_id,
-      });
-      return;
-    }
-
-    // 9. Increment MORE_INFO loop counter if applicable
-    if (flags.wants_more_info) {
-      incrementLoop(effectiveThreadId);
-      console.log(`MORE_INFO loop detected: thread_id=${effectiveThreadId}, count=${getLoopCount(effectiveThreadId)}`);
-    }
-
-    // 9.5. Check if roles are locked and prevent role guessing
+    // 4.12. Check if roles are locked and prevent role guessing
     const lockedRolesList = getLockedRoles(effectiveThreadId);
     if (lockedRolesList.length > 0 && template_id === 'NO_JOB_POST') {
       console.log(`Roles are locked (${lockedRolesList.join(', ')}), using ROLE_CONFIRMED_FOLLOWUP instead of NO_JOB_POST`);
       template_id = 'ROLE_CONFIRMED_FOLLOWUP';
-      // Update vars to include locked roles (as string for template)
-      vars.locked_roles = lockedRolesList.join(' and ');
-      vars.role = lockedRolesList[0]; // Use first locked role as primary
+      // Update extracted to include locked roles (as string for template)
+      extracted.locked_roles = lockedRolesList.join(' and ');
+      extracted.role = lockedRolesList[0]; // Use first locked role as primary
     }
 
-    // 10. Generate Reply Script (with flags for conditional logic)
+    // 5. Generate Reply Script
     let replyText;
     try {
-      // Map classification flags to template flags
+      // Convert extracted to vars format for template compatibility
+      const vars: any = {
+        role: extracted.role || undefined,
+        location: extracted.location || undefined,
+        role1: extracted.role1 || undefined,
+        role2: extracted.role2 || undefined,
+        company_name: extracted.company_name || undefined,
+        contact_email: extracted.new_contact_email || undefined,
+        contact_name: extracted.contact_name || undefined,
+        locked_roles: extracted.locked_roles || undefined,
+      };
+      
+      // Check if contact_info_provided signal exists
+      const hasContactInfo = decision.normalizedSignals.includes('wrong_person' as Signal) && extracted.new_contact_email;
       const templateFlags = {
-        unsubscribe: flags.unsubscribe,
-        contact_info_provided: flags.contact_info_provided,
+        unsubscribe: decision.normalizedSignals.includes('unsubscribe' as Signal),
+        contact_info_provided: !!hasContactInfo, // Ensure boolean
       };
       replyText = getScript(template_id, vars, templateFlags);
     } catch (error: any) {
@@ -717,16 +588,16 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
         console.log(`Agreement already sent for thread ${effectiveThreadId}, skipping duplicate send`);
         // Don't send again, but continue with the rest of the flow
       }
-      // Check for blocking flags
-      else if (flags.wants_resume_first) {
+      // Check for blocking signals
+      else if (decision.normalizedSignals.includes('wants_resume_first' as Signal)) {
         console.log(`Lead wants resume first, skipping agreement send: template_id=${template_id}, thread_id=${effectiveThreadId}`);
         // Don't send agreement, escalate to manual review or use specific script
       }
-      else if (flags.wants_call_first) {
+      else if (decision.normalizedSignals.includes('wants_call_first' as Signal)) {
         console.log(`Lead wants call first, skipping agreement send: template_id=${template_id}, thread_id=${effectiveThreadId}`);
         // Don't send agreement, should respond with call-scheduling script
       }
-      else if (flags.already_signed) {
+      else if (decision.normalizedSignals.includes('already_signed' as Signal)) {
         console.log(`Lead already signed agreement, skipping duplicate send: template_id=${template_id}, thread_id=${effectiveThreadId}`);
         // Mark as sent to prevent future sends
         markAgreementSent(effectiveThreadId);
