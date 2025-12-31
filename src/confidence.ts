@@ -37,7 +37,8 @@ export type Signal =
   | "auto_reply_blank"
   | "unsubscribe"
   | "not_interested"
-  | "done_all_set";
+  | "done_all_set"
+  | "already_signed";
 
 export type Classification = {
   template_id: TemplateId;
@@ -69,15 +70,17 @@ const RX = {
   sendAgreement: /(send|share).{0,20}(agreement|contract|docusign|signwell|e-?sign)/i,
   asksForAgreement: /(can you|could you|please|pls).{0,10}(send|share).{0,20}(agreement|contract)/i,
   sendIt: /(send it|send over|shoot it over|go ahead and send)/i,
-  explicitYes: /^(yes|yep|yeah|sure|ok|okay|sounds good|go ahead)\b/i,
+  explicitYes: /^(yes|yep|yeah|sure|ok|okay|sounds good|go ahead|send it|send|go for it)\b/i,
+  explicitNo: /\b(no|nope|not interested|don't need|not looking|not hiring|we're not|we aren't|not right now|not at this time)\b/i,
   asksFees: /(fee|fees|charge|pricing|cost|percent|percentage|%)/i,
-  wantsResumeFirst: /(send (the )?resume|see (the )?resume|resume first|before (we )?sign|show me (the )?candidates first|profiles first)/i,
-  wantsCallFirst: /(call|phone|talk|schedule|meeting|zoom|teams|monday|tuesday|wednesday|thursday|friday)/i,
-  skeptical: /(cold email|is this legit|spam|do you actually|bot|ai|automation|you('re| are) in florida|mass email)/i,
+  wantsResumeFirst: /(send (the )?resume|see (the )?resume|resume first|before (we )?sign|show me (the )?candidates first|profiles first|blind resume|send (the )?candidates|see (the )?candidates|show (me )?(the )?candidates|want to see (the )?resume|want to see (the )?candidates|review (the )?candidates|review (the )?resume)/i,
+  wantsCallFirst: /(call|phone|talk|schedule|meeting|zoom|teams|monday|tuesday|wednesday|thursday|friday|get with me|touch base|connect|reach out|set up (a )?time|when can we|let'?s (talk|connect|discuss)|i'?d like to (talk|discuss|connect))/i,
+  skeptical: /(cold email|is this legit|spam|do you actually|bot|ai|automation|you('re| are) in florida|mass email|don'?t know (you|us)|never heard of (you|us)|who are (you|y'?all)|what is this about|why are you contacting me|why did you email me)/i,
   unsubscribe: /(unsubscribe|remove me|stop emailing|do not contact|opt out|no more emails)/i,
-  ooo: /(out of office|automatic reply|auto-?reply|vacation|away from the office)/i,
+  ooo: /(out of office|ooo|automatic reply|auto-?reply|vacation|away from the office|i'?m (currently )?out|will return|will respond (upon|when) (my )?return|currently unavailable|i will be away|i am currently out|out until|back on|returning on|away until)/i,
   doneAllSet: /\b(all set|we'?re all set|we'?re good|we'?re covered|no need|good for now)\b/i,
   wrongPerson: /(wrong person|not the right person|not the hiring manager|please contact|reach out to)/i,
+  alreadySigned: /(already signed|signed it|signed the agreement|completed (the )?agreement|already completed|i signed|we signed|just signed)/i,
 };
 
 function clamp01(n: number): number {
@@ -111,12 +114,14 @@ export function normalizeSignals(input: {
   if (RX.asksForAgreement.test(text)) sigs.push("asks_for_agreement");
   if (RX.sendIt.test(text)) sigs.push("send_it");
   if (RX.explicitYes.test(text)) sigs.push("explicit_yes");
+  if (RX.explicitNo.test(text)) sigs.push("not_interested");
   if (RX.asksFees.test(text)) sigs.push("asks_fees");
   if (RX.wantsResumeFirst.test(text)) sigs.push("wants_resume_first");
   if (RX.wantsCallFirst.test(text)) sigs.push("wants_call_first");
   if (RX.skeptical.test(text)) sigs.push("skeptical");
   if (RX.doneAllSet.test(text)) sigs.push("done_all_set");
   if (RX.wrongPerson.test(text)) sigs.push("wrong_person");
+  if (RX.alreadySigned.test(text)) sigs.push("already_signed");
 
   // crude multi-topic detector: multiple strong intents in one message
   const strongIntents =
@@ -137,6 +142,28 @@ export const AUTO_INTENT_WHITELIST = new Set<TemplateId>([
   "ASK_FEES_ONLY",
   "INTERESTED",
   "NOT_INTERESTED",
+  "NOT_HIRING",
+  "NO_JOB_POST",
+  "ROLE_UNCLEAR",
+  "ASKING_WHICH_ROLE",
+  "ROLE_CONFIRMED_FOLLOWUP",
+  "FEES_QUESTION",
+  "ASK_WEBSITE",
+  "ROLE_CLARIFICATION_MULTI",
+  "GEO_CONCERN",
+  "LINK_TO_APPLY",
+  "ASK_COMPANY",
+  "ASK_EXPERIENCE",
+  "ASK_SALARY",
+  "ASK_SOURCE",
+  "FORWARD_TO_TEAM",
+  "CHECK_WITH_HR",
+  "CONFUSED_MESSAGE",
+  "THANK_YOU",
+  "SINGLE_QUESTION_MARK",
+  "HYBRID_WORK",
+  "PDF_FORMAT",
+  "WILL_FORWARD",
   // UNSUBSCRIBE is special: no reply
 ]);
 
@@ -151,19 +178,41 @@ export const DEPTH_WHITELIST = new Set<TemplateId>([
 
 /** Base scores by template */
 const BASE: Record<string, number> = {
-  YES_SEND: 0.55,
-  ASK_AGREEMENT: 0.6,
-  ASK_FEES_ONLY: 0.5,
-  INTERESTED: 0.45,
-  NOT_INTERESTED: 0.7,
+  YES_SEND: 0.85, // Increased - send agreements at any cost
+  ASK_AGREEMENT: 0.85, // Increased - send agreements at any cost
+  ASK_FEES_ONLY: 0.65,
+  INTERESTED: 0.60,
+  NOT_INTERESTED: 0.75,
+  NOT_HIRING: 0.65,
+  NO_JOB_POST: 0.60,
+  ROLE_UNCLEAR: 0.55,
+  ASKING_WHICH_ROLE: 0.60,
+  ROLE_CONFIRMED_FOLLOWUP: 0.70,
+  FEES_QUESTION: 0.65,
+  ASK_WEBSITE: 0.60,
+  ROLE_CLARIFICATION_MULTI: 0.55,
+  GEO_CONCERN: 0.55,
+  LINK_TO_APPLY: 0.50,
+  ASK_COMPANY: 0.60,
+  ASK_EXPERIENCE: 0.60,
+  ASK_SALARY: 0.60,
+  ASK_SOURCE: 0.60,
+  FORWARD_TO_TEAM: 0.60,
+  CHECK_WITH_HR: 0.60,
+  CONFUSED_MESSAGE: 0.60,
+  THANK_YOU: 0.60,
+  SINGLE_QUESTION_MARK: 0.60,
+  HYBRID_WORK: 0.60,
+  PDF_FORMAT: 0.60,
+  WILL_FORWARD: 0.60,
 };
 
 /** Score contributions */
 const ADD = {
-  send_agreement: 0.45,
-  asks_for_agreement: 0.45,
-  send_it: 0.25,
-  explicit_yes: 0.25,
+  send_agreement: 0.50, // Increased - send agreements at any cost
+  asks_for_agreement: 0.50, // Increased - send agreements at any cost
+  send_it: 0.30, // Increased
+  explicit_yes: 0.30, // Increased
   interested: 0.2,
   asks_fees: 0.25,
   short_msg: 0.05,
@@ -172,7 +221,7 @@ const ADD = {
 };
 
 const SUB = {
-  has_question: 0.35,
+  has_question: 0.15,
   multi_topic: 0.25,
   wants_resume_first: 0.6,
   wants_call_first: 0.6,
@@ -181,6 +230,7 @@ const SUB = {
   multiple_roles: 0.4,
   wrong_person: 0.7,
   auto_reply_blank: 0.5,
+  already_signed: 0.8,
 };
 
 function has(sigs: Signal[], s: Signal): boolean {
@@ -196,15 +246,19 @@ export function decideAutoRespond(input: {
   bodyText: string;
   threadState: ThreadState;
   messageId?: string;
-  confidenceThreshold?: number; // default 0.90
+  confidenceThreshold?: number; // default 0.70
 }): ConfidenceDecision {
-  const threshold = input.confidenceThreshold ?? 0.9;
   const template_id = input.classification.template_id as TemplateId;
   const sigs = normalizeSignals({
     bodyText: input.bodyText,
     modelSignals: input.classification.signals,
   });
   const blocking: string[] = [];
+  
+  // PRIORITY: Send agreements at any cost - lower threshold for agreement requests
+  const isAgreementRequest = template_id === "YES_SEND" || template_id === "ASK_AGREEMENT" || 
+                             has(sigs, "send_agreement") || has(sigs, "asks_for_agreement");
+  const threshold = isAgreementRequest ? 0.60 : (input.confidenceThreshold ?? 0.7); // Lower threshold for agreement requests
 
   // Hard stops (no reply)
   if (has(sigs, "unsubscribe") || template_id === "UNSUBSCRIBE") {
@@ -286,10 +340,20 @@ export function decideAutoRespond(input: {
   }
 
   // Agreement safety constraints (even before scoring)
-  // If they want resume/call first, we should not auto-respond with agreement asks.
-  if (has(sigs, "wants_resume_first")) blocking.push("wants_resume_first (manual)");
-  if (has(sigs, "wants_call_first")) blocking.push("wants_call_first (manual)");
-  if (has(sigs, "skeptical")) blocking.push("skeptical (manual)");
+  // PRIORITY: Send agreements at any cost - only block if they explicitly want resume/call first AND NOT explicitly asking for agreement
+  // If they explicitly ask for agreement, send it even if they mention wanting resume/call first
+  const explicitlyAskingForAgreement = has(sigs, "send_agreement") || has(sigs, "asks_for_agreement") || 
+                                        template_id === "YES_SEND" || template_id === "ASK_AGREEMENT";
+  
+  if (has(sigs, "wants_resume_first") && !explicitlyAskingForAgreement) {
+    blocking.push("wants_resume_first (manual)");
+  }
+  if (has(sigs, "wants_call_first") && !explicitlyAskingForAgreement) {
+    blocking.push("wants_call_first (manual)");
+  }
+  if (has(sigs, "skeptical") && !explicitlyAskingForAgreement) {
+    blocking.push("skeptical (manual)");
+  }
   if (has(sigs, "wrong_person")) blocking.push("wrong_person (manual)");
 
   // Score
@@ -322,19 +386,23 @@ export function decideAutoRespond(input: {
 
   // Template-specific must-have rules
   // YES_SEND: require strong agreement-send evidence
+  // PRIORITY: Send agreements at any cost - be more lenient
   if (template_id === "YES_SEND") {
     const strong =
       has(sigs, "send_agreement") ||
       has(sigs, "asks_for_agreement") ||
-      (has(sigs, "send_it") && has(sigs, "explicit_yes"));
-    if (!strong) blocking.push("YES_SEND requires send_agreement OR asks_for_agreement OR (send_it+explicit_yes)");
-    if (has(sigs, "has_question")) blocking.push("YES_SEND blocked: has_question");
+      has(sigs, "send_it") ||
+      has(sigs, "explicit_yes");
+    if (!strong) blocking.push("YES_SEND requires send_agreement OR asks_for_agreement OR send_it OR explicit_yes");
+    // REMOVED: Don't block on questions - if they say yes/send, send it
+    // if (has(sigs, "has_question")) blocking.push("YES_SEND blocked: has_question");
   }
 
   // ASK_AGREEMENT: require explicit agreement request
+  // PRIORITY: Send agreements at any cost - be more lenient
   if (template_id === "ASK_AGREEMENT") {
-    const ok = has(sigs, "asks_for_agreement") || has(sigs, "send_agreement");
-    if (!ok) blocking.push("ASK_AGREEMENT requires asks_for_agreement or send_agreement");
+    const ok = has(sigs, "asks_for_agreement") || has(sigs, "send_agreement") || has(sigs, "send_it");
+    if (!ok) blocking.push("ASK_AGREEMENT requires asks_for_agreement or send_agreement or send_it");
   }
 
   // ASK_FEES_ONLY: require fees question
@@ -342,9 +410,8 @@ export function decideAutoRespond(input: {
     if (!has(sigs, "asks_fees")) blocking.push("ASK_FEES_ONLY requires asks_fees");
   }
 
-  // INTERESTED: block if there are questions or skepticism (to avoid assumptions)
+  // INTERESTED: block only if multi-topic (questions are OK now)
   if (template_id === "INTERESTED") {
-    if (has(sigs, "has_question")) blocking.push("INTERESTED blocked: has_question (manual)");
     if (has(sigs, "multi_topic")) blocking.push("INTERESTED blocked: multi_topic (manual)");
   }
 

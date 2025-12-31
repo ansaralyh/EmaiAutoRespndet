@@ -59,6 +59,18 @@ You MUST follow these rules:
    - "ASK_WEBSITE"
    - "DONE_ALL_SET"
    - "ROLE_CONFIRMED_FOLLOWUP"
+   - "ASK_COMPANY"
+   - "ASK_EXPERIENCE"
+   - "ASK_SALARY"
+   - "ASK_SOURCE"
+   - "FORWARD_TO_TEAM"
+   - "CHECK_WITH_HR"
+   - "CONFUSED_MESSAGE"
+   - "THANK_YOU"
+   - "SINGLE_QUESTION_MARK"
+   - "HYBRID_WORK"
+   - "PDF_FORMAT"
+   - "WILL_FORWARD"
 
 3. "extracted" MUST be a JSON object. Include keys ONLY if you are reasonably confident:
    - "role": the main job title they are talking about (e.g. "Account Executive")
@@ -93,7 +105,7 @@ You MUST follow these rules:
    - "out_of_office": if it's an out-of-office auto-reply
    - "auto_reply_blank": if the message is effectively blank (only quoted content/signatures)
    - "unsubscribe": if they want to stop receiving emails (e.g., "unsubscribe", "remove me", "stop emailing")
-   - "not_interested": if they express they're not interested
+   - "not_interested": if they express they're not interested (e.g., "no", "not interested", "don't need", "not looking", "we're not", "not right now", "nope")
    - "done_all_set": if they say "we're all set", "we're good", "we're covered"
 
    Include ALL signals that apply. The array can be empty if none apply.
@@ -118,6 +130,18 @@ You MUST follow these rules:
    - If they ONLY ask "What are your fees? Is there a fee? What do you charge?" (without mentioning position/role) → template_id = "ASK_FEES_ONLY" (not FEES_QUESTION).
    - If they ask "What roles?" or "Which position?" or "What positions are you referring to?" (clearly asking which roles) → template_id = "ASKING_WHICH_ROLE". IMPORTANT: Infer "role1" and "role2" from company context (domain, name, industry) so the reply can mention specific roles.
    - If they ask "Do you have a website?" or "What's your website?" or "Can I see your website?" → template_id = "ASK_WEBSITE".
+   - If they ask about the company (e.g., "who are you?", "what is AlphaHire?", "tell me about your company", "what do you do?") → template_id = "ASK_COMPANY".
+   - If they ask about candidate experience, qualifications, skills, or background (e.g., "what experience do they have?", "what kind of candidates?", "what's their background?") → template_id = "ASK_EXPERIENCE".
+   - If they ask about salary range, compensation, or pay (e.g., "what's the salary?", "salary range?", "how much?") → template_id = "ASK_SALARY".
+   - If they ask "where did you get my info?", "how did you find me?", "where did you get my contact?" → template_id = "ASK_SOURCE".
+   - If they say "I'll forward to team", "forwarding to team", "I'll share with team" → template_id = "FORWARD_TO_TEAM".
+   - If they say "I'll check with HR", "let me check with HR", "need to check with HR" → template_id = "CHECK_WITH_HR".
+   - If they express confusion about the initial message (e.g., "what is this about?", "I don't understand", "confused") → template_id = "CONFUSED_MESSAGE".
+   - If they say "thank you", "thanks", "appreciate it" → template_id = "THANK_YOU".
+   - If they reply with just "?" or "??" → template_id = "SINGLE_QUESTION_MARK".
+   - If they ask about hybrid work, remote work, or work arrangements → template_id = "HYBRID_WORK".
+   - If they ask for PDF format, "can you send as PDF", "PDF version" → template_id = "PDF_FORMAT".
+   - If they say "I'll forward", "will forward", "forwarding" (without "to team") → template_id = "WILL_FORWARD".
    - If they say the fee or percentage is too high specifically → template_id = "PERCENT_TOO_HIGH".
    - If they say it's too expensive in general but not specifically about percent → template_id = "TOO_EXPENSIVE".
    - If they say they don't have a job posted, are confused about why we're reaching out, or mention no open role → template_id = "NO_JOB_POST".
@@ -126,6 +150,7 @@ You MUST follow these rules:
      * If they DON'T provide contact information OR the contact email they provide is the SAME as the sender's email → template_id = "WRONG_PERSON_NO_CONTACT", include "wrong_person" in signals.
    - If they mention "another person", "someone else", "referral", "know someone", "have someone" who needs the service but DON'T provide contact information → template_id = "WRONG_PERSON_NO_CONTACT", flags.contact_info_provided = false.
    - If they clearly mention "we already use X agency" or "we work with a recruiter" or "we're covered" (already have agency) → template_id = "ALREADY_HAVE_AGENCY". IMPORTANT: Only use ALREADY_HAVE_AGENCY when they clearly mention already having/using an agency/recruiter.
+   - HIGH PRIORITY: If they say "no", "nope", "not interested", "don't need", "not looking", "we're not", "we aren't", "not right now", "not at this time" → template_id = "NOT_INTERESTED_GENERAL" (NOT "NO_JOB_POST" or other templates). This is a clear rejection - classify as NOT_INTERESTED_GENERAL immediately.
    - If they say "we're not hiring" or "we don't have openings" or "we're not hiring right now" → template_id = "NOT_HIRING".
    - If they say they are not interested, don't need help, or the position is filled (but NOT specifically about not hiring) → template_id = "NOT_INTERESTED_GENERAL".
    - If they say "we're all set", "we're good for now", "we're covered", "no need, thanks though", "we're good", "all set" → template_id = "DONE_ALL_SET". This is a polite soft-no indicating the conversation is over.
