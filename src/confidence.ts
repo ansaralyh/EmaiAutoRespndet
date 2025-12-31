@@ -353,9 +353,13 @@ export function decideAutoRespond(input: {
   if (has(sigs, "wants_call_first") && !explicitlyAskingForAgreement) {
     blocking.push("wants_call_first (manual)");
   }
-  if (has(sigs, "skeptical") && !explicitlyAskingForAgreement) {
-    blocking.push("skeptical (manual)");
+  // SKEPTICAL messages should auto-respond (we have a template for it)
+  // Only block if they're skeptical AND we're trying to send an agreement (which we shouldn't do)
+  // But if template is SKEPTICAL, allow it to auto-respond
+  if (has(sigs, "skeptical") && !explicitlyAskingForAgreement && template_id !== "SKEPTICAL") {
+    blocking.push("skeptical (manual) - not SKEPTICAL template");
   }
+  // If template is SKEPTICAL, allow it (don't block)
   if (has(sigs, "wrong_person")) blocking.push("wrong_person (manual)");
 
   // Score
