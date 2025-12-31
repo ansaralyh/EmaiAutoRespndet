@@ -475,6 +475,141 @@ We work on a flat 10% fee with a 6-month replacement guarantee and already have 
 
 If that sounds reasonable, would you like me to send the agreement so we can share full candidate details without redactions?`;
   },
+
+  /**
+   * 22. ASK_COMPANY - When They Ask About the Company
+   */
+  ASK_COMPANY: (vars: TemplateVars) => {
+    return `Great question — we're AlphaHire, a recruitment agency specializing in placing top talent for companies like yours.
+
+We work on a flat 10% fee with a 6-month replacement guarantee, and we focus on sending you candidates who are ready to contribute immediately.
+
+If it sounds like a fit, I can send over the agreement and a couple of candidate profiles to review.`;
+  },
+
+  /**
+   * 23. ASK_EXPERIENCE - When They Ask About Candidate Experience
+   */
+  ASK_EXPERIENCE: (vars: TemplateVars) => {
+    const role = vars.role || vars.role1 || 'these roles';
+    return `Great question — we focus on candidates with strong, relevant experience for ${role} positions.
+
+Our candidates are pre-vetted and ready to contribute immediately. We only send profiles that match your specific requirements.
+
+Would you like me to send the agreement so we can share full candidate details?`;
+  },
+
+  /**
+   * 24. ASK_SALARY - When They Ask About Salary Range
+   */
+  ASK_SALARY: (vars: TemplateVars) => {
+    return `Great question — salary ranges vary based on the specific role, location, and experience level.
+
+Once we know the exact position you're looking to fill, I can provide more specific salary information for candidates in that range.
+
+What role are you looking to fill? I can send the agreement and candidate profiles with salary details.`;
+  },
+
+  /**
+   * 22. ASK_SOURCE - When They Ask "Where Did You Get My Info?"
+   */
+  ASK_SOURCE: (vars: TemplateVars) => {
+    return `Great question — we use a combination of public business directories, company websites, and professional networks to identify companies that might benefit from our services.
+
+We only reach out when we believe we can genuinely help with your hiring needs.
+
+If you'd like to see how we can help, I can send over the agreement and some candidate profiles.`;
+  },
+
+  /**
+   * 23. FORWARD_TO_TEAM - When They Say "I'll Forward to Team"
+   */
+  FORWARD_TO_TEAM: (vars: TemplateVars) => {
+    return `Perfect — thanks for forwarding it along.
+
+If your team has any questions or wants to move forward, feel free to reply here and I'll send the agreement over.
+
+I'll follow up in a few days to see if there's interest.`;
+  },
+
+  /**
+   * 24. CHECK_WITH_HR - When They Say "I'll Check with HR"
+   */
+  CHECK_WITH_HR: (vars: TemplateVars) => {
+    return `Sounds good — happy to wait while you check with HR.
+
+If they're interested, just reply here and I'll send the agreement over.
+
+I'll follow up in a few days to see where things stand.`;
+  },
+
+  /**
+   * 25. CONFUSED_MESSAGE - When They're Confused About Initial Message
+   */
+  CONFUSED_MESSAGE: (vars: TemplateVars) => {
+    return `No worries — let me clarify.
+
+We're AlphaHire, a recruitment agency. We help companies fill tough-to-hire roles with pre-vetted candidates.
+
+We work on a flat 10% fee with a 6-month replacement guarantee.
+
+If that sounds like something your team could use, I can send the agreement and some candidate profiles to review.`;
+  },
+
+  /**
+   * 26. THANK_YOU - When They Say "Thank You"
+   */
+  THANK_YOU: (vars: TemplateVars) => {
+    return `You're welcome!
+
+If you'd like to move forward, just let me know and I'll send the agreement over.
+
+Otherwise, I'll follow up in a few days to see if there's interest.`;
+  },
+
+  /**
+   * 27. SINGLE_QUESTION_MARK - When They Reply with Just "?"
+   */
+  SINGLE_QUESTION_MARK: (vars: TemplateVars) => {
+    return `Happy to clarify — we're AlphaHire, a recruitment agency that helps companies fill tough-to-hire roles.
+
+We work on a flat 10% fee with a 6-month replacement guarantee.
+
+If you're interested, I can send the agreement and some candidate profiles to review. What role are you looking to fill?`;
+  },
+
+  /**
+   * 28. HYBRID_WORK - When They Ask About Hybrid Work Arrangements
+   */
+  HYBRID_WORK: (vars: TemplateVars) => {
+    return `Great question — we work with candidates across all work arrangements (remote, hybrid, and on-site).
+
+Once we know the specific role and requirements, I can send candidates who match your work arrangement preferences.
+
+What role are you looking to fill? I can send the agreement and candidate profiles.`;
+  },
+
+  /**
+   * 29. PDF_FORMAT - When They Ask for PDF Format
+   */
+  PDF_FORMAT: (vars: TemplateVars) => {
+    return `Absolutely — the agreement will be sent via SignWell (e-signature platform), which allows you to download it as a PDF after signing.
+
+You'll receive a copy in your email once it's signed.
+
+Would you like me to send it over now?`;
+  },
+
+  /**
+   * 30. WILL_FORWARD - When They Say "I'll Forward" or "Will Forward"
+   */
+  WILL_FORWARD: (vars: TemplateVars) => {
+    return `Perfect — thanks for forwarding it along.
+
+If there's interest, just reply here and I'll send the agreement over.
+
+I'll follow up in a few days to see if your team wants to move forward.`;
+  },
 };
 
 /**

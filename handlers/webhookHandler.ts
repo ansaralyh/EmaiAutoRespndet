@@ -214,8 +214,12 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
               
               // Only check recent automation replies (after bot marker feature) for bot marker
               const msgBody = getMessageText(msg) || msg.body || msg.text || msg.html || '';
+              // Check both the marker string and the HTML comment format
+              const hasBotMarker = msgBody.includes(botMarker) || 
+                                   msgBody.includes('X-Autobot') || 
+                                   msgBody.includes('alphahire-v1');
               // If last outbound automation reply doesn't have bot marker, it was manual
-              if (!msgBody.includes(botMarker)) {
+              if (!hasBotMarker) {
                 console.log(`Manual reply detected in thread history (no bot marker in automation reply), marking as manual owner: thread_id=${effectiveThreadId}`);
                 markAsManualOwner(effectiveThreadId);
                 res.status(200).json({ 
@@ -237,6 +241,21 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
       // Removed Slack notification - client wants only agreement sent and manual review alerts
     }
 
+    // 3.4. Check subject line for stop/unsubscribe signals
+    const subjectText = email_subject || '';
+    const subjectLower = subjectText.toLowerCase();
+    if (subjectLower.includes('stop') || subjectLower.includes('unsubscribe') || 
+        subjectLower === 'no' || subjectLower.startsWith('no ')) {
+      console.log(`Stop/unsubscribe detected in subject line: ${subjectText}`);
+      markAsUnsubscribed(lead_email);
+      res.status(200).json({
+        message: 'Stop/unsubscribe in subject - marked as DNC, no reply sent',
+        template_id: 'UNSUBSCRIBE',
+      });
+      markProcessed(message_id);
+      return;
+    }
+
     // 3.5. Check for blank/empty messages - classify as AUTO_REPLY_BLANK
     if (!messageText || messageText.trim().length === 0) {
       console.log(`Blank/empty message detected, treating as AUTO_REPLY_BLANK: message_id=${message_id}`);
@@ -247,6 +266,62 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
       });
       markProcessed(message_id);
       return;
+    }
+
+    // 3.6. Fallback OOO detection (check before classification to catch missed OOO messages)
+    const oooPattern = /(out of office|ooo|automatic reply|auto-?reply|vacation|away from the office|i'?m (currently )?out|will return|will respond (upon|when) (my )?return|currently unavailable|i will be away|i am currently out|out until|back on|returning on|away until)/i;
+    if (oooPattern.test(messageText)) {
+      // Additional check: If sender name matches lead name, it's likely OOO auto-reply
+      const senderName = lead_name?.toLowerCase().trim() || '';
+      const messageLower = messageText.toLowerCase();
+      // Check if message contains sender's name (common in OOO auto-replies)
+      if (senderName && messageLower.includes(senderName)) {
+        console.log(`OOO pattern detected with sender name match, forcing OUT_OF_OFFICE classification`);
+        res.status(200).json({
+          message: 'Out of office message (name match detected) - no reply sent',
+          template_id: 'OUT_OF_OFFICE',
+        });
+        markProcessed(message_id);
+        return;
+      }
+      // Also check if email subject/body mentions same email address
+      if (lead_email && messageLower.includes(lead_email.toLowerCase())) {
+        console.log(`OOO pattern detected with email match, forcing OUT_OF_OFFICE classification`);
+        res.status(200).json({
+          message: 'Out of office message (email match detected) - no reply sent',
+          template_id: 'OUT_OF_OFFICE',
+        });
+        markProcessed(message_id);
+        return;
+      }
+      console.log('OOO pattern detected in message text, forcing OUT_OF_OFFICE classification');
+      res.status(200).json({
+        message: 'Out of office message - no reply sent',
+        template_id: 'OUT_OF_OFFICE',
+      });
+      markProcessed(message_id);
+      return;
+    }
+
+    // 3.7. PRIORITY FIX #11: Check for wrong person with same email BEFORE classification
+    // Early detection: Check if message mentions wrong person AND contains same email as sender
+    const wrongPersonPattern = /(wrong person|not the right person|not the hiring manager|please contact|reach out to)/i;
+    if (wrongPersonPattern.test(messageText)) {
+      // Check if message contains an email that matches sender's email
+      const emailPattern = /([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/gi;
+      const emailsInMessage = messageText.match(emailPattern) || [];
+      const senderEmail = threadFrom || lead_email;
+      
+      // If any email in message matches sender email, it's likely wrong person with same email bug
+      if (emailsInMessage.some(email => email.toLowerCase().trim() === senderEmail?.toLowerCase().trim())) {
+        console.log(`Wrong person with same email detected early: sender=${senderEmail}, emails_in_message=${emailsInMessage.join(', ')}`);
+        res.status(200).json({
+          message: 'Wrong person - same email detected (early check), manual review required',
+          template_id: 'WRONG_PERSON_NO_CONTACT',
+        });
+        markProcessed(message_id);
+        return;
+      }
     }
 
     // 4. Classify Email with OpenAI
@@ -304,7 +379,7 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
     };
 
     // 4.7. Use confidence system to decide if we should auto-respond
-    const decision = decideAutoRespond({
+    let decision = decideAutoRespond({
       classification: classificationForConfidence,
       bodyText: messageText,
       threadState,
@@ -453,14 +528,41 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
       }
     }
 
-    // 4.12. Check if roles are locked and prevent role guessing
+    // 4.12. PRIORITY FIX #43: Check if roles are locked and prevent role guessing
+    // If roles are locked, use ROLE_CONFIRMED_FOLLOWUP instead of templates that guess roles
     const lockedRolesList = getLockedRoles(effectiveThreadId);
-    if (lockedRolesList.length > 0 && template_id === 'NO_JOB_POST') {
-      console.log(`Roles are locked (${lockedRolesList.join(', ')}), using ROLE_CONFIRMED_FOLLOWUP instead of NO_JOB_POST`);
-      template_id = 'ROLE_CONFIRMED_FOLLOWUP';
-      // Update extracted to include locked roles (as string for template)
-      extracted.locked_roles = lockedRolesList.join(' and ');
-      extracted.role = lockedRolesList[0]; // Use first locked role as primary
+    if (lockedRolesList.length > 0) {
+      // If template is one that guesses roles, replace it with ROLE_CONFIRMED_FOLLOWUP
+      const roleGuessingTemplates = ['NO_JOB_POST', 'ROLE_UNCLEAR', 'ASKING_WHICH_ROLE'];
+      if (roleGuessingTemplates.includes(template_id)) {
+        console.log(`Roles are locked (${lockedRolesList.join(', ')}), using ROLE_CONFIRMED_FOLLOWUP instead of ${template_id}`);
+        template_id = 'ROLE_CONFIRMED_FOLLOWUP';
+        // Update extracted to include locked roles (as string for template)
+        extracted.locked_roles = lockedRolesList.join(' and ');
+        extracted.role = lockedRolesList[0]; // Use first locked role as primary
+        // Update classification for confidence system
+        classificationForConfidence.template_id = 'ROLE_CONFIRMED_FOLLOWUP';
+        classificationForConfidence.extracted = extracted;
+        // Re-run confidence decision with corrected template
+        decision = decideAutoRespond({
+          classification: classificationForConfidence,
+          bodyText: messageText,
+          threadState: {
+            autoRepliesSent: getAutoRepliesSent(effectiveThreadId),
+            agreementSent: isAgreementSent(effectiveThreadId),
+            manualOwner: isManualOwner(effectiveThreadId),
+            lastTemplateSent: getLastTemplateId(effectiveThreadId) || undefined,
+            processedMessageIds: undefined,
+          },
+          messageId: message_id,
+        });
+        
+        // If corrected decision blocks, respect it
+        if (!decision.okToAutoRespond) {
+          console.log(`Corrected template ROLE_CONFIRMED_FOLLOWUP blocked: ${decision.blockingReasons.join(', ')}`);
+          // Continue with blocked decision - will be handled by existing blocking logic
+        }
+      }
     }
 
     // 5. Generate Reply Script
@@ -582,33 +684,111 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
     }
 
     // 12. Send E-Signature if Required (with guardrails)
+    // PRIORITY: Send agreements at any cost - only block if explicitly already sent
     if (AUTO_SEND_TEMPLATES.has(template_id)) {
-      // Check if agreement was already sent for this thread
-      if (isAgreementSent(effectiveThreadId)) {
-        console.log(`Agreement already sent for thread ${effectiveThreadId}, skipping duplicate send`);
-        // Don't send again, but continue with the rest of the flow
+      // Check if agreement was already sent for this thread - but allow if they explicitly ask again
+      const explicitlyAskingAgain = decision.normalizedSignals.includes('send_agreement' as Signal) || 
+                                     decision.normalizedSignals.includes('asks_for_agreement' as Signal) ||
+                                     decision.normalizedSignals.includes('send_it' as Signal);
+      
+      // PRIORITY: Check if this is a reply to our follow-up email (prevent duplicate agreement)
+      // If message is very short and just acknowledges the follow-up, don't send agreement again
+      const isShortAcknowledgment = messageText.trim().length < 50 && 
+                                    (messageText.toLowerCase().includes('thanks') || 
+                                     messageText.toLowerCase().includes('thank you') ||
+                                     messageText.toLowerCase().includes('received') ||
+                                     messageText.toLowerCase().includes('got it'));
+      
+      // PRIORITY FIX #16: Atomic check to prevent race conditions - check once and use result
+      const wasAlreadySent = isAgreementSent(effectiveThreadId);
+      
+      if (wasAlreadySent && !explicitlyAskingAgain) {
+        // If it's a short acknowledgment of follow-up, definitely don't send agreement again
+        if (isShortAcknowledgment) {
+          console.log(`Agreement already sent and lead just acknowledging follow-up, skipping duplicate send: thread_id=${effectiveThreadId}`);
+          // Don't send again - exit early to prevent any processing
+          res.status(200).json({
+            message: 'Agreement already sent - acknowledgment received, no duplicate send',
+            template_id,
+            agreement_sent: false,
+          });
+          markProcessed(message_id);
+          return;
+        } else {
+          console.log(`Agreement already sent for thread ${effectiveThreadId}, skipping duplicate send`);
+          // Don't send again, but continue with the rest of the flow
+        }
       }
-      // Check for blocking signals
-      else if (decision.normalizedSignals.includes('wants_resume_first' as Signal)) {
+      // If they explicitly ask again, allow it (maybe they didn't receive it)
+      else if (wasAlreadySent && explicitlyAskingAgain && !isShortAcknowledgment) {
+        console.log(`Agreement already sent but lead explicitly asking again, allowing resend: thread_id=${effectiveThreadId}`);
+        // Continue to send agreement below
+      }
+      // If agreement sent and it's just acknowledgment, skip
+      else if (wasAlreadySent && isShortAcknowledgment) {
+        console.log(`Agreement already sent and lead just acknowledging, skipping: thread_id=${effectiveThreadId}`);
+        // Don't send again - exit early
+        res.status(200).json({
+          message: 'Agreement already sent - acknowledgment received, no duplicate send',
+          template_id,
+          agreement_sent: false,
+        });
+        markProcessed(message_id);
+        return;
+      }
+      // Check for blocking signals - PRIORITY: Send agreements at any cost
+      // Only block if they want resume/call first AND not explicitly asking for agreement
+      const explicitlyAskingForAgreement = decision.normalizedSignals.includes('send_agreement' as Signal) || 
+                                           decision.normalizedSignals.includes('asks_for_agreement' as Signal) ||
+                                           decision.normalizedSignals.includes('send_it' as Signal) ||
+                                           template_id === 'YES_SEND' || template_id === 'ASK_AGREEMENT';
+      
+      if (decision.normalizedSignals.includes('wants_resume_first' as Signal) && !explicitlyAskingForAgreement) {
         console.log(`Lead wants resume first, skipping agreement send: template_id=${template_id}, thread_id=${effectiveThreadId}`);
-        // Don't send agreement, escalate to manual review or use specific script
+        // Don't send agreement - just send the email reply without agreement
+        // Continue to send email reply but skip agreement
       }
       else if (decision.normalizedSignals.includes('wants_call_first' as Signal)) {
         console.log(`Lead wants call first, skipping agreement send: template_id=${template_id}, thread_id=${effectiveThreadId}`);
-        // Don't send agreement, should respond with call-scheduling script
+        // Don't send agreement - just send the email reply without agreement
+        // Continue to send email reply but skip agreement
+      }
+      else if (decision.normalizedSignals.includes('auto_reply_blank' as Signal)) {
+        console.log(`Blank auto-reply detected, skipping agreement send: template_id=${template_id}, thread_id=${effectiveThreadId}`);
+        // Don't send agreement for blank replies
+        // This should have been caught earlier, but double-check
+      }
+      else if (decision.normalizedSignals.includes('done_all_set' as Signal)) {
+        console.log(`Lead said "all set", skipping agreement send: template_id=${template_id}, thread_id=${effectiveThreadId}`);
+        // Don't send agreement - they're done
+        // This should have been caught earlier, but double-check
       }
       else if (decision.normalizedSignals.includes('already_signed' as Signal)) {
         console.log(`Lead already signed agreement, skipping duplicate send: template_id=${template_id}, thread_id=${effectiveThreadId}`);
         // Mark as sent to prevent future sends
         markAgreementSent(effectiveThreadId);
-        // Don't send agreement again
+        // Don't send agreement again - return early to prevent any reply
+        res.status(200).json({
+          message: 'Lead already signed - no agreement sent',
+          template_id,
+          agreement_sent: false,
+        });
+        markProcessed(message_id);
+        return;
       }
       // All checks passed - send agreement
       else {
         try {
           // Use active contact (lastFrom) instead of original lead_email
           // This ensures agreements go to the latest human respondent, not always the original recipient
-          const recipientEmail = getLastFrom(effectiveThreadId) || lead_email || '';
+          // PRIORITY: For forwarded emails, use the actual sender (threadFrom) as recipient
+          // If threadFrom is different from lead_email, it means email was forwarded - use threadFrom
+          const recipientEmail = threadFrom && threadFrom !== lead_email ? threadFrom : (getLastFrom(effectiveThreadId) || lead_email || '');
+          
+          // Additional validation: If recipient email looks like a forwarding service or is different from sender, log it
+          if (recipientEmail !== lead_email && recipientEmail !== threadFrom) {
+            console.log(`Agreement recipient differs from lead_email: recipient=${recipientEmail}, lead_email=${lead_email}, threadFrom=${threadFrom}`);
+          }
           
           await sendAgreement({
             clientEmail: recipientEmail,
@@ -617,7 +797,8 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
           });
           console.log(`Agreement sent successfully: template_id=${template_id}, thread_id=${effectiveThreadId}`);
           
-          // Mark agreement as sent for this thread
+          // Mark agreement as sent IMMEDIATELY after successful send (before any other processing)
+          // This ensures the hard stop in confidence system will work for subsequent messages
           markAgreementSent(effectiveThreadId);
           
           // Agreement sent alert: Success case
