@@ -779,19 +779,36 @@ export async function handleReachinboxWebhook(req: Request, res: Response): Prom
       // All checks passed - send agreement
       else {
         try {
-          // Use active contact (lastFrom) instead of original lead_email
-          // This ensures agreements go to the latest human respondent, not always the original recipient
-          // PRIORITY: For forwarded emails, use the actual sender (threadFrom) as recipient
-          // If threadFrom is different from lead_email, it means email was forwarded - use threadFrom
-          const recipientEmail = threadFrom && threadFrom !== lead_email ? threadFrom : (getLastFrom(effectiveThreadId) || lead_email || '');
+          // PRIORITY FIX: Use lead_email as primary recipient (the actual lead)
+          // getLastFrom() tracks inbound message senders (should be the lead)
+          // threadFrom might be the sender's email (person sending the mail), not the lead's email
+          // Priority: getLastFrom() (tracked lead) > lead_email (webhook lead) > threadFrom (only if not sender's email)
+          const lastFromEmail = getLastFrom(effectiveThreadId);
           
-          // Additional validation: If recipient email looks like a forwarding service or is different from sender, log it
-          if (recipientEmail !== lead_email && recipientEmail !== threadFrom) {
-            console.log(`Agreement recipient differs from lead_email: recipient=${recipientEmail}, lead_email=${lead_email}, threadFrom=${threadFrom}`);
+          // CRITICAL: Never use email_account (sender's email) as recipient
+          // If threadFrom equals email_account, it's the sender, not the lead - don't use it
+          const safeThreadFrom = threadFrom && threadFrom !== email_account ? threadFrom : null;
+          
+          const recipientEmail = lastFromEmail || lead_email || safeThreadFrom || '';
+          
+          // Log recipient selection for debugging
+          console.log(`Agreement recipient selected: recipient=${recipientEmail}, lead_email=${lead_email}, lastFrom=${lastFromEmail}, threadFrom=${threadFrom}, email_account=${email_account}`);
+          
+          // Validation: Warn if recipient equals sender's email (this should never happen)
+          if (recipientEmail === email_account) {
+            console.error(`❌ ERROR: Agreement recipient is sender's email! Using lead_email instead. recipient=${recipientEmail}, lead_email=${lead_email}`);
+            // Force use lead_email if recipient is sender's email
+            const correctedRecipient = lead_email || '';
+            if (correctedRecipient) {
+              console.log(`Corrected recipient to lead_email: ${correctedRecipient}`);
+            }
           }
           
+          // Final recipient (use corrected if needed)
+          const finalRecipientEmail = recipientEmail === email_account ? (lead_email || lastFromEmail || '') : recipientEmail;
+          
           await sendAgreement({
-            clientEmail: recipientEmail,
+            clientEmail: finalRecipientEmail,
             clientName: lead_name,
             companyName: lead_company,
           });
