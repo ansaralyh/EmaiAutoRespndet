@@ -164,6 +164,7 @@ export const AUTO_INTENT_WHITELIST = new Set<TemplateId>([
   "HYBRID_WORK",
   "PDF_FORMAT",
   "WILL_FORWARD",
+  "SKEPTICAL",
   // UNSUBSCRIBE is special: no reply
 ]);
 
@@ -205,6 +206,7 @@ const BASE: Record<string, number> = {
   HYBRID_WORK: 0.60,
   PDF_FORMAT: 0.60,
   WILL_FORWARD: 0.60,
+  SKEPTICAL: 0.50,
 };
 
 /** Score contributions */
